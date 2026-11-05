@@ -199,9 +199,13 @@ Lint checks naming, documentation, error handling, SQL cleanup and complexity.
 Use the tool version pinned in CI; see [Go review guidance](../AGENTS.md).
 
 CI uses standard GitHub runners for lint, tests, four-platform archives and a
-two-platform Linux image. PRs do not publish. Version tags publish via scoped
+two-platform Linux image. Branch pushes, PRs and manual workflow runs only run
+checks. Pushing a `v*` version tag builds and publishes via scoped
 `GITHUB_TOKEN` permissions; prereleases do not update `latest`. Artifacts expire
 after seven days. GHCR visibility may need adjustment after first publication.
+
+Binary archives support Linux and macOS on amd64/arm64. Windows is not currently
+supported; the state lock uses Unix APIs.
 
 Real-server tests remain explicit local commands until CI has a pinned compatible
 server artifact and fixture. Keep the large comparison suite separate from PR

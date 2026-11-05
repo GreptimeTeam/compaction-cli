@@ -29,25 +29,45 @@ type Backend interface {
 	Compact(context.Context, Diagnosis, Window, time.Duration) error
 }
 
+// ScanConfig contains only the limits used to plan range probes.
+type ScanConfig struct {
+	Budget                             int
+	RequestWindow, MinWindow, Interval time.Duration
+}
+
+// RunConfig contains the submission and observation limits used by Runner.
+type RunConfig struct {
+	Target, MaxCalls                   int
+	Poll, Quiet, Observe, AdminTimeout time.Duration
+}
+
+func validateRange(start, end time.Time) error {
+	if !end.After(start) {
+		return fmt.Errorf("%w: end must be later than start (UTC, end exclusive)", errInvalidArguments)
+	}
+	if !start.Add(end.Sub(start)).Equal(end) {
+		return fmt.Errorf("%w: time range exceeds the supported duration", errInvalidArguments)
+	}
+	return nil
+}
+
 // Scan first covers the entire range, then refines dense windows breadth-first.
 // Exhausting the budget preserves a complete, explicitly capped frontier.
-func Scan(ctx context.Context, backend Backend, id uint64, start, end time.Time, step time.Duration, options Options, emit func(Window)) ([]Window, error) {
-	if !end.After(start) {
-		return nil, fmt.Errorf("end must be later than start (UTC, end exclusive)")
+func Scan(ctx context.Context, backend Backend, id uint64, start, end time.Time, config ScanConfig, emit func(Window)) ([]Window, error) {
+	if err := validateRange(start, end); err != nil {
+		return nil, err
 	}
-	if step < options.MinWindow || step <= 0 {
-		return nil, fmt.Errorf("request window must be at least %s", options.MinWindow)
+	step := config.RequestWindow
+	if step < config.MinWindow || step <= 0 {
+		return nil, fmt.Errorf("%w: request window must be at least %s", errInvalidArguments, config.MinWindow)
 	}
-	budget := options.ScanBudget
+	budget := config.Budget
 	if budget < 1 {
-		return nil, fmt.Errorf("scan-budget must be positive")
+		return nil, fmt.Errorf("%w: scan-budget must be positive", errInvalidArguments)
 	}
 	// Widen only the initial coverage pass if the selected range exceeds budget.
 	// The actual windows remain visible for review before any ADMIN submission.
 	span := end.Sub(start)
-	if !start.Add(span).Equal(end) {
-		return nil, fmt.Errorf("time range exceeds the supported duration")
-	}
 	if span/step >= time.Duration(budget) {
 		step = span / time.Duration(budget)
 		if span%time.Duration(budget) != 0 {
@@ -63,7 +83,7 @@ func Scan(ctx context.Context, backend Backend, id uint64, start, end time.Time,
 			return Window{}, err
 		}
 		if queries > 0 {
-			if err := wait(ctx, options.ScanInterval); err != nil {
+			if err := wait(ctx, config.Interval); err != nil {
 				return Window{}, err
 			}
 		}
@@ -87,7 +107,7 @@ func Scan(ctx context.Context, backend Backend, id uint64, start, end time.Time,
 		plan = append(plan, w)
 		a = b
 	}
-	plan, err := refineWindows(plan, options.MinWindow, budget, &queries, probe)
+	plan, err := refineWindows(plan, config.MinWindow, budget, &queries, probe)
 	if err != nil {
 		return nil, err
 	}
@@ -138,10 +158,10 @@ type Progress struct {
 
 // Runner serializes ADMIN submissions and stops on uncertainty or lack of progress.
 type Runner struct {
-	Store   Backend
-	Options Options
-	Pause   func() bool
-	Emit    func(Progress)
+	Store  Backend
+	Config RunConfig
+	Pause  func() bool
+	Emit   func(Progress)
 }
 
 func wait(ctx context.Context, d time.Duration) error {
@@ -170,13 +190,13 @@ func (r Runner) Run(ctx context.Context, diagnosis Diagnosis, plan []Window, ind
 			if err != nil {
 				return windowIndex, calls, err
 			}
-			if !window.Limited && len(window.Files) <= r.Options.Target {
+			if !window.Limited && len(window.Files) <= r.Config.Target {
 				window.State = "target reached"
-				r.Emit(Progress{windowIndex, calls, window, nil, "Window meets target"})
+				r.Emit(Progress{Index: windowIndex, Calls: calls, Window: window, Regions: nil, Message: "Window meets target"})
 				break
 			}
-			if calls >= r.Options.MaxCalls {
-				return windowIndex, calls, fmt.Errorf("ADMIN budget reached (%d calls); inspect results before starting a new run", calls)
+			if calls >= r.Config.MaxCalls {
+				return windowIndex, calls, fmt.Errorf("%w (%d calls); inspect results before starting a new run", errBudgetExhausted, calls)
 			}
 			if r.Pause() {
 				return windowIndex, calls, nil
@@ -184,11 +204,11 @@ func (r Runner) Run(ctx context.Context, diagnosis Diagnosis, plan []Window, ind
 			before := window.Fingerprint()
 			calls++
 			window.State = "ADMIN in flight"
-			r.Emit(Progress{windowIndex, calls, window, nil, "Submitting one ADMIN; pause stops future submissions"})
+			r.Emit(Progress{Index: windowIndex, Calls: calls, Window: window, Regions: nil, Message: "Submitting one ADMIN; pause stops future submissions"})
 			if r.Pause() {
 				return windowIndex, calls - 1, nil
 			}
-			if err = r.Store.Compact(ctx, diagnosis, window, r.Options.AdminTimeout); err != nil {
+			if err = r.Store.Compact(ctx, diagnosis, window, r.Config.AdminTimeout); err != nil {
 				return windowIndex, calls, err
 			}
 			var paused bool
@@ -196,13 +216,13 @@ func (r Runner) Run(ctx context.Context, diagnosis Diagnosis, plan []Window, ind
 			if err != nil || paused {
 				return windowIndex, calls, err
 			}
-			if !window.Limited && len(window.Files) <= r.Options.Target {
+			if !window.Limited && len(window.Files) <= r.Config.Target {
 				window.State = "target reached"
-				r.Emit(Progress{windowIndex, calls, window, nil, "Window meets target after observation"})
+				r.Emit(Progress{Index: windowIndex, Calls: calls, Window: window, Regions: nil, Message: "Window meets target after observation"})
 				break
 			}
 			if window.Fingerprint() == before {
-				return windowIndex, calls, fmt.Errorf("no progress observed in %s .. %s (%s files); stopped submitting. A capped sample cannot prove global inactivity; inspect or rescan", stamp(window.Start), stamp(window.End), window.Count())
+				return windowIndex, calls, fmt.Errorf("%w in %s .. %s (%s files); stopped submitting. A capped sample cannot prove global inactivity; inspect or rescan", errNoProgress, stamp(window.Start), stamp(window.End), window.Count())
 			}
 		}
 	}
@@ -214,11 +234,11 @@ func (r Runner) observe(ctx context.Context, d Diagnosis, index, calls int, wind
 	began, stable := time.Now(), time.Now()
 	previous := ""
 	settled := false
-	for time.Since(began) < r.Options.Observe {
+	for time.Since(began) < r.Config.Observe {
 		if r.Pause() {
 			return window, true, nil
 		}
-		if err := wait(ctx, r.Options.Poll); err != nil {
+		if err := wait(ctx, r.Config.Poll); err != nil {
 			return window, false, err
 		}
 		after, e := r.Store.Probe(ctx, d.ID, window.Start, window.End)
@@ -240,15 +260,15 @@ func (r Runner) observe(ctx context.Context, d Diagnosis, index, calls int, wind
 			previous = key
 		}
 		after.State = "observing"
-		r.Emit(Progress{index, calls, after, regions, "Waiting for stable SST observations (background work may extend outside request)"})
+		r.Emit(Progress{Index: index, Calls: calls, Window: after, Regions: regions, Message: "Waiting for stable SST observations (background work may extend outside request)"})
 		window = after
-		if time.Since(stable) >= r.Options.Quiet {
+		if time.Since(stable) >= r.Config.Quiet {
 			settled = true
 			break
 		}
 	}
 	if !settled {
-		return window, false, fmt.Errorf("observation timed out after %s; no further ADMIN submitted. Background work may still be running; inspect and rescan", r.Options.Observe)
+		return window, false, fmt.Errorf("%w after %s; no further ADMIN submitted. Background work may still be running; inspect and rescan", errObservationTimeout, r.Config.Observe)
 	}
 	return window, false, nil
 }

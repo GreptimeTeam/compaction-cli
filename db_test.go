@@ -18,9 +18,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -34,7 +34,7 @@ func TestAuditFailurePreventsSQLSubmission(t *testing.T) {
 	s := &Store{audit: &Audit{file: f}, timeout: time.Second}
 	// A nil DB deliberately proves the failure is returned before any SQL access.
 	err = s.Compact(context.Background(), Diagnosis{Table: "events"}, Window{}, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "audit log write failed") {
+	if err == nil || !errors.Is(err, errAuditFailed) {
 		t.Fatalf("error=%v", err)
 	}
 	if _, err = s.Regions(context.Background(), 1); err == nil {

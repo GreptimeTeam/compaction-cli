@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +39,7 @@ import (
 // Options holds validated connection, planning and execution settings.
 type Options struct {
 	Provided                              map[string]bool `json:"-"`
-	Output                                string
+	Output                                string          // Kept in schema v1; run/resume use invocation output flags.
 	Start, End, Save, PlanPath, StatePath string
 	Execute, AckUnknown, PasswordStdin    bool
 
@@ -188,6 +189,51 @@ func (o Options) validateScan() error {
 	}
 	if o.ScanInterval < 100*time.Millisecond {
 		return fmt.Errorf("scan-interval must be at least 100ms")
+	}
+	return nil
+}
+
+func (o Options) scanConfig() ScanConfig {
+	return ScanConfig{Budget: o.ScanBudget, RequestWindow: o.RequestWindow, MinWindow: o.MinWindow, Interval: o.ScanInterval}
+}
+
+func (o Options) runConfig() RunConfig {
+	return RunConfig{Target: o.Target, MaxCalls: o.MaxCalls, Poll: o.Poll, Quiet: o.Quiet, Observe: o.Observe, AdminTimeout: o.AdminTimeout}
+}
+
+func (o Options) planRange() (time.Time, time.Time, error) {
+	if o.Start == "" || o.End == "" {
+		return time.Time{}, time.Time{}, invalid("plan requires explicit --start and --end; use diagnose to discover bounds")
+	}
+	start, err := time.Parse(time.RFC3339Nano, o.Start)
+	if err != nil {
+		return time.Time{}, time.Time{}, invalid("invalid --start RFC3339")
+	}
+	end, err := time.Parse(time.RFC3339Nano, o.End)
+	if err != nil {
+		return time.Time{}, time.Time{}, invalid("invalid --end RFC3339")
+	}
+	return start, end, validateRange(start, end)
+}
+
+func validateCommand(cmd string, options Options) error {
+	switch cmd {
+	case "tables", "diagnose", "plan", "run", "resume", "status":
+	default:
+		return invalid("unknown command: " + cmd)
+	}
+	commands := map[string]string{
+		"start": "plan", "end": "plan", "save": "plan", "plan": "run",
+		"state": "run resume status", "execute": "run resume", "ack-unknown": "resume",
+	}
+	for key, allowed := range commands {
+		if options.Provided[key] && !slices.Contains(strings.Fields(allowed), cmd) {
+			return invalid("--" + key + " is not supported by " + cmd)
+		}
+	}
+	if cmd == "plan" {
+		_, _, err := options.planRange()
+		return err
 	}
 	return nil
 }

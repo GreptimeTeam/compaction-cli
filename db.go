@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/go-sql-driver/mysql"
 	"os"
 	"regexp"
 	"sort"
@@ -31,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // Audit records SQL activity and retains write errors to stop further submissions.
@@ -49,7 +50,7 @@ func (a *Audit) Write(kind string, value any) {
 	defer a.mu.Unlock()
 	if a.err == nil {
 		if err := json.NewEncoder(a.file).Encode(map[string]any{"time": time.Now().UTC(), "kind": kind, "value": value}); err != nil {
-			a.err = fmt.Errorf("audit log write failed: %w; further SQL submissions stopped", err)
+			a.err = fmt.Errorf("%w: %w; further SQL submissions stopped", errAuditFailed, err)
 		}
 	}
 }
@@ -78,7 +79,7 @@ type Region struct {
 	Manifest     sql.NullInt64
 	ID           uint64
 	Files, Bytes uint64
-	Min, Max     sql.NullInt64
+	Min, Max     sql.NullInt64 // Included in diagnosis JSON and saved schema-v1 plans.
 }
 
 // Diagnosis identifies physical table storage and its observed time bounds.
@@ -100,7 +101,7 @@ func (d Diagnosis) Totals() (n, b uint64) {
 	return
 }
 
-// File is an SST manifest entry with nanosecond time bounds.
+// File identifies a sampled SST. Nanosecond bounds are populated for audit output.
 type File struct {
 	Region   uint64
 	ID       string
@@ -114,7 +115,7 @@ type Window struct {
 	Files      []File
 	Limited    bool
 	State      string
-	Calls      int
+	Calls      int // Reserved zero-valued field in manifest audit snapshots.
 }
 
 // Fingerprint hashes sorted region/file identities to detect sample changes.
@@ -144,7 +145,7 @@ func (w Window) Bytes() uint64 {
 	return b
 }
 func literal(s string) string {
-	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\\", "\\\\"), "'", "''") + "'"
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 func (s *Store) query(ctx context.Context, operation, q string, read func(*sql.Rows) error) error {
@@ -306,11 +307,21 @@ func (s *Store) Probe(ctx context.Context, id uint64, start, end time.Time) (Win
 	window := Window{Start: start, End: end, State: "scanned"}
 	// Assign each SST by max_ts, matching TWCS's bucket assignment. No aggregate
 	// outside a LIMIT: a capped result is a lower bound, never an exact count.
-	q := fmt.Sprintf("SELECT region_id, file_id, CAST(min_ts AS BIGINT) AS min_ns, CAST(max_ts AS BIGINT) AS max_ns, file_size FROM information_schema.ssts_manifest WHERE %s AND max_ts >= %s::TIMESTAMP_NS AND max_ts < %s::TIMESTAMP_NS ORDER BY max_ts ASC, min_ts ASC, region_id ASC, file_id ASC LIMIT %d", s.manifestScope(id), literal(stamp(start)), literal(stamp(end)), s.limit)
+	// File bounds are audit detail; ordinary probes need only identity and size.
+	includeBounds := s.audit != nil && s.audit.file != nil
+	columns := "region_id, file_id, file_size"
+	if includeBounds {
+		columns += ", CAST(min_ts AS BIGINT) AS min_ns, CAST(max_ts AS BIGINT) AS max_ns"
+	}
+	q := fmt.Sprintf("SELECT %s FROM information_schema.ssts_manifest WHERE %s AND max_ts >= %s::TIMESTAMP_NS AND max_ts < %s::TIMESTAMP_NS ORDER BY max_ts ASC, min_ts ASC, region_id ASC, file_id ASC LIMIT %d", columns, s.manifestScope(id), literal(stamp(start)), literal(stamp(end)), s.limit)
 	err := s.query(ctx, "Scan manifest window "+stamp(start)+" .. "+stamp(end), q, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var f File
-			if e := rows.Scan(&f.Region, &f.ID, &f.Min, &f.Max, &f.Bytes); e != nil {
+			destinations := []any{&f.Region, &f.ID, &f.Bytes}
+			if includeBounds {
+				destinations = append(destinations, &f.Min, &f.Max)
+			}
+			if e := rows.Scan(destinations...); e != nil {
 				return e
 			}
 			window.Files = append(window.Files, f)
@@ -339,16 +350,23 @@ func (s *Store) Compact(ctx context.Context, d Diagnosis, w Window, timeout time
 	}
 	_, err := s.db.ExecContext(ctx, q)
 	if err != nil {
-		var me *mysql.MySQLError
-		// RegionBusy maps to MySQL ER_INTERNAL_ERROR (1815), shared by other
-		// errors. Require the exact upstream rejection message as well.
-		if len(d.Regions) == 1 && errors.As(err, &me) && me.Number == 1815 && manualBusy.MatchString(me.Message) {
-			return &AdminError{Kind: "admin_busy", Cause: err}
-		}
-		return &AdminError{Kind: "admin_unknown", Cause: err}
+		return classifyAdminError(err, len(d.Regions))
 	}
 	s.audit.Write("admin-return", map[string]any{"start": w.Start, "end": w.End})
 	return nil
+}
+
+// A multi-region request may partially succeed even if one region reports busy.
+// Only the known single-region rejection establishes that no work was accepted.
+func classifyAdminError(err error, regionCount int) error {
+	if err == nil {
+		return nil
+	}
+	var mysqlErr *mysql.MySQLError
+	if regionCount == 1 && errors.As(err, &mysqlErr) && mysqlErr.Number == 1815 && manualBusy.MatchString(mysqlErr.Message) {
+		return &AdminError{Kind: "admin_busy", Cause: err}
+	}
+	return &AdminError{Kind: "admin_unknown", Cause: err}
 }
 
 // Table options are rendered as space-separated key=value pairs by GreptimeDB.

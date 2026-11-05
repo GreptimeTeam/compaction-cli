@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -102,19 +103,21 @@ func problem(err error, password string) *CommandError {
 		if failure.OutcomeUnknown {
 			failure.Exit = 5
 		}
+	case errors.Is(err, errInvalidArguments):
+		failure.Code, failure.Exit = "invalid_arguments", 2
 	case errors.Is(err, context.Canceled):
 		failure.Code = "interrupted"
 		failure.Exit = 130
-	case strings.Contains(err.Error(), "audit log write failed"):
+	case errors.Is(err, errAuditFailed):
 		failure.Code = "audit_failed"
 		failure.Exit = 7
-	case strings.Contains(err.Error(), "observation timed out"):
+	case errors.Is(err, errObservationTimeout):
 		failure.Code = "observation_timeout"
 		failure.Exit = 6
-	case strings.Contains(err.Error(), "no progress observed"):
+	case errors.Is(err, errNoProgress):
 		failure.Code = "no_progress"
 		failure.Exit = 6
-	case strings.Contains(err.Error(), "ADMIN budget reached"):
+	case errors.Is(err, errBudgetExhausted):
 		failure.Code = "budget_exhausted"
 		failure.Exit = 6
 	}
@@ -200,7 +203,7 @@ func (p *Printer) markdown(kind string, data any, final bool) error {
 		}
 		fmt.Fprintf(&output, "| %d | %d | %s | %s | %s |\n", value.Index+1, value.Calls, value.Window.Count(), total, md(value.Window.State))
 	case State:
-		fmt.Fprintf(&output, "\n**%s** — %d/%d windows complete; %d ADMIN attempts.\n", md(value.Status), value.Index, len(value.Plan.Windows), value.Calls)
+		fmt.Fprintf(&output, "\n**%s** — %d/%d windows checkpointed; %d ADMIN attempts.\n", md(value.Status), value.Index, len(value.Plan.Windows), value.Calls)
 		if value.Error != nil {
 			fmt.Fprintf(&output, "\nError `%s`: %s\n", value.Error.Code, md(value.Error.Message))
 		}
@@ -252,19 +255,54 @@ func readJSON(path string, v any) error {
 		return err
 	}
 	if len(data) > 16<<20 {
-		return fmt.Errorf("JSON file exceeds 16 MiB")
+		return invalid("JSON file exceeds 16 MiB")
 	}
-	dec := json.NewDecoder(strings.NewReader(string(data)))
+	if err := checkSchemaVersion(data); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err = dec.Decode(v); err != nil {
-		return err
+		return invalid("invalid JSON document: " + err.Error())
 	}
 	var extra any
 	if err = dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("trailing JSON data")
+		return invalid("trailing JSON data")
 	}
 	return nil
 }
+
+// Check versions before strict field decoding so newer schemas have a useful error.
+func checkSchemaVersion(data []byte) error {
+	var header struct {
+		Version int `json:"version"`
+		Plan    *struct {
+			Version int `json:"version"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return invalid("invalid JSON document: " + err.Error())
+	}
+	versions := []int{header.Version}
+	if header.Plan != nil {
+		versions = append(versions, header.Plan.Version)
+	}
+	for _, version := range versions {
+		if version != schemaVersion {
+			return invalid(fmt.Sprintf("unsupported schema version %d (supported: %d)", version, schemaVersion))
+		}
+	}
+	return nil
+}
+
+func inputFileError(err error) error {
+	var failure *CommandError
+	if errors.As(err, &failure) {
+		return err
+	}
+	return stateError(err)
+}
+
 func saveJSON(path string, v any, exclusive bool) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -278,6 +316,12 @@ func saveJSON(path string, v any, exclusive bool) error {
 		if e != nil {
 			return e
 		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = os.Remove(path)
+			}
+		}()
 		_, e = f.Write(data)
 		if e == nil {
 			e = f.Sync()
@@ -289,7 +333,11 @@ func saveJSON(path string, v any, exclusive bool) error {
 		if ce != nil {
 			return ce
 		}
-		return syncParent(path)
+		if err := syncParent(path); err != nil {
+			return err
+		}
+		committed = true
+		return nil
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".greptime-compaction-cli-state-*")
 	if err != nil {
@@ -391,7 +439,7 @@ func readState(path string) (State, error) {
 		return state, invalid("--state is required")
 	}
 	if err := readJSON(path, &state); err != nil {
-		return state, stateError(err)
+		return state, inputFileError(err)
 	}
 	if err := validatePlan(state.Plan); err != nil {
 		return state, err
@@ -403,8 +451,11 @@ func readState(path string) (State, error) {
 }
 
 func validateExecutionFlags(options Options) error {
-	if !options.Execute || options.StatePath == "" {
-		return invalid("--execute and --state are required")
+	if !options.Execute {
+		return invalid("--execute is required")
+	}
+	if options.StatePath == "" {
+		return invalid("--state is required")
 	}
 	for key := range options.Provided {
 		switch key {
@@ -437,7 +488,7 @@ func (session *commandSession) prepareExecution(cmd string) error {
 		return invalid("--plan is required")
 	}
 	if err := readJSON(options.PlanPath, &session.state.Plan); err != nil {
-		return stateError(err)
+		return inputFileError(err)
 	}
 	if err := validatePlan(session.state.Plan); err != nil {
 		return err
@@ -445,7 +496,10 @@ func (session *commandSession) prepareExecution(cmd string) error {
 	session.state.Version = schemaVersion
 	session.state.Status = "ready"
 	session.state.Updated = time.Now().UTC()
-	if err := saveJSON(options.StatePath, session.state, true); err != nil {
+	// Do not create a checkpoint until connection and table identity checks succeed.
+	if _, err := os.Lstat(options.StatePath); err == nil {
+		return stateError(fmt.Errorf("state file already exists: %s", options.StatePath))
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return stateError(err)
 	}
 	return nil
@@ -479,6 +533,9 @@ func command(args []string, out io.Writer) int {
 	}
 	if err != nil {
 		return session.fail(invalid(err.Error()), "")
+	}
+	if err := validateCommand(args[0], options); err != nil {
+		return session.fail(err, "")
 	}
 	return session.dispatch(args[0])
 }
@@ -602,12 +659,12 @@ func (session *commandSession) runConnected(cmd string) int {
 		}
 		return 0
 	}
-	d, err := store.Diagnose(ctx, conn.Table, conn.Database)
+	diagnosis, err := store.Diagnose(ctx, conn.Table, conn.Database)
 	if err != nil {
 		return fail(err, password)
 	}
 	if cmd == "diagnose" {
-		printer.Emit("diagnosis", d, true)
+		printer.Emit("diagnosis", diagnosis, true)
 		if printer.Err != nil {
 			return 7
 		}
@@ -615,26 +672,27 @@ func (session *commandSession) runConnected(cmd string) int {
 	}
 	session.store = store
 	if cmd == "plan" {
-		return session.plan(ctx, cancel, d)
+		return session.plan(ctx, cancel, diagnosis)
 	}
-	return session.execute(ctx, d)
+	if cmd == "run" {
+		if diagnosis.ID != state.Plan.Diagnosis.ID {
+			return fail(invalid("table identity changed since plan creation; create a new plan"), password)
+		}
+		if err := saveJSON(options.StatePath, state, true); err != nil {
+			return fail(stateError(err), password)
+		}
+	}
+	return session.execute(ctx, diagnosis)
 }
 
 func (session *commandSession) plan(ctx context.Context, cancel context.CancelFunc, diagnosis Diagnosis) int {
 	options, store, printer, fail, password := session.options, session.store, session.printer, session.fail, session.password
-	if options.Start == "" || options.End == "" {
-		return fail(invalid("plan requires explicit --start and --end; use diagnose to discover bounds"), password)
-	}
-	start, err := time.Parse(time.RFC3339Nano, options.Start)
+	start, end, err := options.planRange()
 	if err != nil {
-		return fail(invalid("invalid --start RFC3339"), password)
+		return fail(err, password)
 	}
-	end, err := time.Parse(time.RFC3339Nano, options.End)
-	if err != nil {
-		return fail(invalid("invalid --end RFC3339"), password)
-	}
-	windows, err := Scan(ctx, store, diagnosis.ID, start, end, options.RequestWindow, options, func(w Window) {
-		printer.Emit("scan", PlannedWindow{w.Start, w.End, len(w.Files), w.Limited, w.Bytes()}, false)
+	windows, err := Scan(ctx, store, diagnosis.ID, start, end, options.scanConfig(), func(w Window) {
+		printer.Emit("scan", PlannedWindow{Start: w.Start, End: w.End, Count: len(w.Files), Limited: w.Limited, Bytes: w.Bytes()}, false)
 		if printer.Err != nil {
 			cancel()
 		}
@@ -652,9 +710,9 @@ func (session *commandSession) plan(ctx context.Context, cancel context.CancelFu
 	saved.Save = ""
 	saved.PlanPath = ""
 	saved.StatePath = ""
-	plan := Plan{Version: 1, Created: time.Now().UTC(), Options: saved, Diagnosis: diagnosis}
+	plan := Plan{Version: schemaVersion, Created: time.Now().UTC(), Options: saved, Diagnosis: diagnosis}
 	for _, w := range windows {
-		plan.Windows = append(plan.Windows, PlannedWindow{w.Start, w.End, len(w.Files), w.Limited, w.Bytes()})
+		plan.Windows = append(plan.Windows, PlannedWindow{Start: w.Start, End: w.End, Count: len(w.Files), Limited: w.Limited, Bytes: w.Bytes()})
 	}
 	if options.Save != "" {
 		if err = saveJSON(options.Save, plan, true); err != nil {
@@ -693,7 +751,7 @@ func (session *commandSession) execute(ctx context.Context, diagnosis Diagnosis)
 	if persistErr != nil {
 		return fail(stateError(persistErr), password)
 	}
-	runner := Runner{Store: store, Options: conn, Pause: func() bool { return stopped.Load() || persistErr != nil || printer.Err != nil }, Emit: func(p Progress) {
+	runner := Runner{Store: store, Config: conn.runConfig(), Pause: func() bool { return stopped.Load() || persistErr != nil || printer.Err != nil }, Emit: func(p Progress) {
 		state.Index = p.Index
 		state.Calls = p.Calls
 		if p.Window.State == "ADMIN in flight" {

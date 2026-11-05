@@ -4,3 +4,5 @@
 !go.sum
 !LICENSE
 !skills/**
+
+*_test.go

@@ -204,7 +204,8 @@ def main():
                 cli(f"auth-run-error-{trial}","run","--plan",str(plan),"--state",str(auth_state),"--execute","--password-stdin",password="wrong\n",expected=3)
                 assert not auth_state.exists()
     finally:credentials.unlink()
-    assert all(password not in f.read_text() for f in root.glob("*.stdout"))
+    assert all(password not in f.read_text() for f in root.rglob("*")
+               if f.is_file() and f.suffix in (".stdout", ".stderr", ".audit", ".json", ".jsonl"))
     (root/"result.json").write_text(json.dumps({"passed":True,"scope":"CLI diagnostics, plan, execute guard, signal pause, persisted resume, JSON/JSONL/Markdown, stdin authentication, logical-table handling, SQL literal round trips, failed connection/diagnosis leaves no checkpoint; row count and sum unchanged"},indent=2))
     print("CLI E2E passed:",root)
 

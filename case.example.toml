@@ -1,0 +1,10 @@
+# Layout of an existing immutable standalone data directory, not a generator.
+# Table: public.compaction_bench, one region, TWCS time window = 6h.
+# row_id = 0..(sst_count * rows_per_sst - 1)
+# ts (TIMESTAMP(9)) = start_unix_nanos + row_id * step_nanos
+[scenario.layout]
+sst_count = 30000
+regions = 1
+rows_per_sst = 1
+start_unix_nanos = 1784851200000000000
+step_nanos = 1000000000

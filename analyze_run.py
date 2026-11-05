@@ -38,7 +38,10 @@ def distribution(values):
 
 def seconds(value):
     units = {"h": 3600, "m": 60, "s": 1, "ms": .001, "µs": .000001, "us": .000001, "ns": 1e-9}
-    return sum(float(n)*units[u] for n,u in re.findall(r"([\d.]+)(ns|µs|us|ms|s|m|h)", value))
+    token = r"(\d+(?:\.\d+)?)(ns|µs|us|ms|s|m|h)"
+    if not re.fullmatch(f"(?:{token})+", value):
+        raise ValueError(f"unrecognized duration: {value!r}")
+    return sum(float(n)*units[u] for n,u in re.findall(token, value))
 
 
 def collect_shape(port, table_id, start_ns, end_ns, output, budget=128, limit=200):
@@ -102,33 +105,49 @@ def analyze(root):
     phases = collections.defaultdict(list)
     warnings, errors = [],[]
     times = []
+    compaction_lines = unparsed = 0
     logs = sorted((root/"standalone/logs").glob("greptimedb.20*"))
     for path in logs:
-        for line in path.open():
-            if " WARN " in line: warnings.append(line.strip())
-            if " ERROR " in line: errors.append(line.strip())
-            match = re.search(r"compaction inputs: \[(.*?)\], outputs: \[(.*?)\].*metrics: (.*)",line)
-            if not match: continue
-            ins,outs = re.findall(UUID,match[1]),re.findall(UUID,match[2])
-            inputs.append(len(ins)); outputs.append(len(outs))
-            consumed.update(ins); generated.update(outs)
-            times.append(datetime.datetime.fromisoformat(line.split()[0].replace("Z","+00:00")))
-            for name,duration in re.findall(r"(\w+): ([\d.]+(?:ns|µs|us|ms|s))",match[3]):
-                phases[name].append(seconds(duration))
+        with path.open() as log:
+            for line in log:
+                if " WARN " in line: warnings.append(line.strip())
+                if " ERROR " in line: errors.append(line.strip())
+                if "compaction inputs:" not in line:
+                    continue
+                compaction_lines += 1
+                match = re.search(r"compaction inputs: \[(.*?)\], outputs: \[(.*?)\].*metrics: (.*)",line)
+                if not match:
+                    unparsed += 1
+                    continue
+                try:
+                    timestamp = datetime.datetime.fromisoformat(line.split()[0].replace("Z", "+00:00"))
+                except ValueError:
+                    unparsed += 1
+                    continue
+                ins,outs = re.findall(UUID,match[1]),re.findall(UUID,match[2])
+                inputs.append(len(ins)); outputs.append(len(outs))
+                consumed.update(ins); generated.update(outs)
+                times.append(timestamp)
+                for name,duration in re.findall(r"(\w+): ([\d.]+(?:ns|µs|us|ms|s))",match[3]):
+                    phases[name].append(seconds(duration))
     intervals = [(b-a).total_seconds() for a,b in zip(times,times[1:])]
     audit = root/"queries.jsonl"
     if not audit.exists(): audit=root/"screens/queries.jsonl"
-    events = [json.loads(l) for l in audit.open()]
+    with audit.open() as stream:
+        events = [json.loads(line) for line in stream]
     query_groups=collections.defaultdict(list)
     failed=[]
     for event in events:
         if event["kind"] == "query-result":
             value=event["value"]
-            name=value["operation"].split(" 2026-")[0]
+            operation = value["operation"]
+            match = re.match(r"^(compaction (?:inputs|outputs)):", operation)
+            name = match[1] if match else re.sub(r" \d{4}-\d{2}-\d{2}T.*$", "", operation)
             query_groups[name].append(seconds(value["elapsed"]))
             if not value["ok"]: failed.append(value)
     result={"scope":"Observed functional test; inter-completion intervals are not task duration or causal attribution",
         "admin_submissions":sum(e["kind"]=="admin-submit" for e in events),
+        "compaction_log_lines":compaction_lines,"unparsed_compaction_lines":unparsed,
         "compaction_units":len(inputs),"inputs_per_unit":distribution(inputs),"outputs_per_unit":distribution(outputs),
         "outputs_later_reconsumed":len(generated & consumed),"terminal_output_ids_count":len(generated-consumed),
         "logged_phase_seconds":{k:distribution(v) for k,v in phases.items()},

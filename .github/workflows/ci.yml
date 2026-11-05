@@ -134,7 +134,7 @@ jobs:
           pattern: binary-*
           merge-multiple: true
           path: dist
-      - name: Create release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -142,4 +142,7 @@ jobs:
         run: |
           args=(--verify-tag --generate-notes)
           if [[ "$TAG" == *-* ]]; then args+=(--prerelease); fi
-          gh release create "$TAG" dist/* "${args[@]}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" "${args[@]}"
+          fi
+          gh release upload "$TAG" dist/* --clobber

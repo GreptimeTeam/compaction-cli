@@ -22,18 +22,44 @@ import argparse
 import datetime
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
 import signal
 import subprocess
 import threading
-import time
 import tomllib
 import uuid
 
 import e2e
 import analyze_run
+
+
+def load_layout(path):
+    """Validate the external snapshot's deterministic, single-region layout."""
+    layout = tomllib.loads(path.read_text())["scenario"]["layout"]
+    for key in ("sst_count", "regions", "rows_per_sst", "step_nanos"):
+        if type(layout.get(key)) is not int or layout[key] <= 0:
+            raise ValueError(f"{key} must be a positive integer")
+    if type(layout.get("start_unix_nanos")) is not int:
+        raise ValueError("start_unix_nanos must be an integer")
+    if layout["regions"] != 1:
+        raise ValueError("the fixture must have one region")
+    if layout["sst_count"] * layout["rows_per_sst"] < 8:
+        raise ValueError("the fixture must contain at least eight rows")
+    return layout
+
+
+def validate_evidence(analysis):
+    """Reject missing or incomplete evidence before writing a passing result."""
+    summary = analysis.get("shape", {})
+    if not summary.get("complete") or not summary.get("sst_bytes", {}).get("count"):
+        raise ValueError("final SST shape must be complete and nonempty")
+    if "p50" not in summary["sst_bytes"]:
+        raise ValueError("final SST size quantiles are missing")
+    if analysis["unparsed_compaction_lines"]:
+        raise ValueError("server compaction log lines were not parsed")
+    if not analysis["compaction_units"]:
+        raise ValueError("no parsed compaction completion evidence")
 
 
 def main():
@@ -52,8 +78,7 @@ def main():
     (root / "standalone").mkdir()
     cli_binary = root / "greptime-compaction-cli"
     subprocess.run(["go", "build", "-o", str(cli_binary), "."], cwd=e2e.HERE, check=True)
-    layout = tomllib.loads(args.case.read_text())["scenario"]["layout"]
-    assert layout["sst_count"] == 30000 and layout["regions"] == 1
+    layout = load_layout(args.case)
     shutil.copyfile(args.case, root / "case.toml")
     shutil.copytree(args.snapshot, root / "standalone/data")
     (root / "snapshot-source.json").write_text(json.dumps({"source": str(args.snapshot.resolve()),
@@ -100,7 +125,7 @@ def main():
                 connection=["--port",str(addresses[2]),"--table","compaction_bench"]
                 cli("initial",["diagnose",*connection,"-o","json","--log",str(root/"initial.audit")])
                 initial=json.loads((root/"initial.stdout").read_text())["data"]
-                assert sum(r["Files"] for r in initial["Regions"]) == 30000
+                assert sum(r["Files"] for r in initial["Regions"]) == layout["sst_count"]
                 plan, state = root/"plan.json", root/"state.json"
                 cli("plan",["plan",*connection,"--start",initial["Start"],"--end",initial["End"],"--save",str(plan),"--limit","200","--target-files","50","--scan-interval","100ms","--poll","1s","--quiet","2s","--observe-timeout","30m","--log",str(root/"plan.audit"),"-o","markdown"])
                 # Pause after the first accepted request is observable, then resume
@@ -142,7 +167,7 @@ def main():
                     assert response["output"][0]["records"]["rows"] == [[i, start+i*step] for i in range(first,end)]
                     checks.append(response)
                 (root / "boundary-checks.json").write_text(json.dumps(checks))
-                analyze_run.collect_shape(addresses[0], 1024, start, start+n*step, root / "final-shape.json")
+                analyze_run.collect_shape(addresses[0], initial["ID"], start, start+n*step, root / "final-shape.json")
                 import urllib.request
                 (root / "metrics-final.prom").write_bytes(urllib.request.urlopen(f"http://127.0.0.1:{addresses[0]}/metrics", timeout=10).read())
                 assert proc.poll() is None, "server exited during the test"
@@ -159,13 +184,15 @@ def main():
     assert all(len(v["Files"] or []) <= 200 for v in snapshots)
     resources = [json.loads(line) for line in (root / "resources.jsonl").read_text().splitlines()]
     assert resources and int(resources[-1]["memory_events"]["oom_kill"]) == 0
+    analysis = analyze_run.analyze(root)
+    (root / "analysis.json").write_text(json.dumps(analysis, indent=2))
+    validate_evidence(analysis)
     result = {"passed": True, "scope": "full plan convergence" if args.converge else "bounded CLI pause/resume, not total convergence",
               "manifest_queries": len(manifest), "max_returned_manifest_rows": max(len(v["Files"] or []) for v in snapshots),
               "cgroup_peak_bytes": max(r["memory_peak"] for r in resources),
               "cpu_seconds_during_test": (int(resources[-1]["cpu"]["usage_usec"])-int(resources[0]["cpu"]["usage_usec"]))/1e6,
               "validation": "exact first/last eight rows; interior rows not checked"}
     (root / "result.json").write_text(json.dumps(result, indent=2))
-    (root / "analysis.json").write_text(json.dumps(analyze_run.analyze(root), indent=2))
     print(json.dumps(result, indent=2))
 
 

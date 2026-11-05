@@ -16,8 +16,8 @@
 Put flags after the command. Explicit flags override the
 [TOML configuration](../config.example.toml). Unknown keys are errors.
 `run` and `resume` use connection, range and tuning settings saved in the plan;
-create another plan to change those settings. Command-specific flags and TOML
-keys are rejected outside their commands; `--ack-unknown` is resume-only. They accept state, auth, output,
+create another plan to change those settings. Range, plan, state and execution flags (and corresponding TOML
+keys) are checked for command applicability; `--ack-unknown` is resume-only. They accept state, auth, output,
 execution and audit-log flags. Existing plan, initial state and audit files are
 not overwritten.
 
@@ -190,7 +190,7 @@ make lint
 make build
 python3 e2e.py --greptime /absolute/path/to/greptime --out /tmp/new-cli-e2e
 python3 large_e2e.py --greptime /path/to/greptime \
-  --snapshot /path/to/immutable/snapshot --case /path/to/case.toml \
+  --snapshot /path/to/immutable/snapshot --case case.example.toml \
   --out /path/to/new-result --converge
 ```
 
@@ -198,8 +198,15 @@ Small E2E uses isolated standalone instances and real MySQL. It covers output
 formats, password stdin, logical tables, pause/resume and concurrent ADMIN
 rejection. Running unit tests without a server does not cover these cases.
 
-Large E2E requires Linux cgroup v2 and a systemd user manager. Defaults are
-30,000 SSTs, one region, 1 CPU, 1 GiB and no swap. It copies the fixture, records
+Large E2E requires Linux cgroup v2 and a systemd user manager. Resource defaults are
+1 CPU, 1 GiB and no swap. The external snapshot must contain a single-region
+`compaction_bench` table with `row_id` and nanosecond `ts` columns.
+[case.example.toml](../case.example.toml) describes its existing layout; it does
+not generate the snapshot. `sst_count`, `rows_per_sst`, and `step_nanos` must be
+positive integers, `regions` must be 1, and the total row count must be at least 8.
+`start_unix_nanos` is an integer epoch timestamp. Rows must have consecutive
+`row_id` values starting at 0 and `ts = start_unix_nanos + row_id * step_nanos`.
+Initial diagnosis must match `sst_count`. The example describes 30,000 SSTs. It copies the fixture, records
 CPU/cgroup memory and logs, checks boundary rows, and collects final SST shape.
 `--converge` uses a 30-minute observation budget; `--max-input-files` changes only
 the isolated test server. Tiny synthetic files do not reproduce production I/O
@@ -219,6 +226,14 @@ supported; the state lock uses Unix APIs.
 
 Real-server tests remain explicit local commands until CI has a pinned compatible
 server artifact and fixture. Keep the large comparison suite separate from PR
-checks. The currently tested main revision is
-`351f4207b4446e48befc02b03779849013fc2886`; older servers require separate validation,
+checks. A one-off local run used main revision
+`351f4207b4446e48befc02b03779849013fc2886`; its binary and fixture are not shipped
+in this repository. This is not a reproducible benchmark baseline. Other builds require validation,
 particularly for manifest LIMIT pushdown and compaction behavior.
+
+Analyze saved large-run artifacts with `python3 analyze_run.py --run /path/to/result`.
+The report includes parsed and unparsed compaction line counts; large E2E rejects
+unparsed lines, missing completions, or empty/incomplete final shape evidence.
+Shape collection uses bounded 6-hour probes, splitting saturated probes down to
+1 second (a split requires at least 2 seconds). Boundary and bucket statistics
+assume UTC-aligned 6-hour TWCS windows; they do not discover the table option.

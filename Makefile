@@ -13,7 +13,7 @@ check:
 	python3 -m unittest discover -s scripts -p '*_test.py'
 	python3 -m py_compile e2e.py large_e2e.py analyze_run.py scripts/build.py
 
-# Use the golangci-lint version pinned in .github/workflows/ci.yml.
+# Install the CI-pinned golangci-lint version on PATH, or set GOLANGCI_LINT.
 GOLANGCI_LINT ?= golangci-lint
 lint:
 	$(GOLANGCI_LINT) run ./...

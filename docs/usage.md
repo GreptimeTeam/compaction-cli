@@ -123,7 +123,7 @@ all database commands, including run/resume, but not offline status.
 | `admin-timeout` | 5m | ADMIN response deadline |
 | `poll` | 2s | Observation interval, at least 1s |
 | `quiet` | 10s | Unchanged observations required before proceeding |
-| `observe-timeout` | 2m | Observation budget after an ADMIN |
+| `observe-timeout` | 2m | Observation budget; must exceed quiet + poll, with extra time for queries |
 | `log` | off | New mode-0600 JSONL audit file |
 
 The default planning budget allows up to 1,024 probes of 1,000 rows each.

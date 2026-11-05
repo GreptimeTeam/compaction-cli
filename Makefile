@@ -1,0 +1,23 @@
+.PHONY: build test check fmt dist image
+
+build:
+	go build -trimpath -o greptime-compaction-cli .
+
+test:
+	go test -race ./...
+
+check:
+	test -z "$$(gofmt -l *.go)"
+	go vet ./...
+	go test -race ./...
+	python3 -m unittest discover -s scripts -p '*_test.py'
+	python3 -m py_compile e2e.py large_e2e.py analyze_run.py scripts/build.py
+
+fmt:
+	gofmt -w *.go
+
+dist:
+	python3 scripts/build.py
+
+image:
+	docker build -t compaction-cli:local .

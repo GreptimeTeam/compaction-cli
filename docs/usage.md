@@ -16,10 +16,14 @@
 Put flags after the command. Explicit flags override the
 [TOML configuration](../config.example.toml). Unknown keys are errors.
 `run` and `resume` use connection, range and tuning settings saved in the plan;
-create another plan to change those settings. Range, plan, state and execution flags (and corresponding TOML
-keys) are checked for command applicability; `--ack-unknown` is resume-only. They accept state, auth, output,
-execution and audit-log flags. Existing plan, initial state and audit files are
-not overwritten.
+create another plan to change those settings. They accept state, auth, output,
+execution and audit-log flags; `--ack-unknown` is resume-only.
+
+Flags and TOML keys are checked for command applicability. `--table` is for
+`diagnose` and `plan`; compaction and scan tuning settings are for `plan`.
+Keep shared tables/diagnose configs limited to connection settings; uncomment
+tuning settings only in configs used by plan. Existing plan, initial state and
+audit files are not overwritten.
 
 ## Authentication
 

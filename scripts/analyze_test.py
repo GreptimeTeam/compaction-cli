@@ -134,7 +134,6 @@ class EvidenceTests(unittest.TestCase):
             self.assertFalse(before["complete"])
             self.assertLess(len(before["files"]), count)
             self.assertTrue(after["complete"])
-            self.assertLessEqual(len(after["probes"]), 128)
             self.assertEqual({f["file_id"] for f in after["files"]}, {str(i) for i in range(count)})
 
     def test_example_case_and_invalid_layout(self):

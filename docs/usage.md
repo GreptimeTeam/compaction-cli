@@ -106,6 +106,10 @@ window/progress fields for rendering rather than rewriting execution artifacts.
 
 ## Tuning
 
+Compaction and scan settings below are accepted only by `plan` and saved for
+run/resume. `query-timeout` also applies to tables/diagnose; `log` applies to
+all database commands, including run/resume, but not offline status.
+
 | Flag / TOML key | Default | Limit or purpose |
 |---|---:|---|
 | `limit` | 1000 | Manifest rows per query, 2–1000 |

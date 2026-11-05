@@ -145,6 +145,13 @@ def main():
             ts=(datetime.datetime(2026,7,24,12,tzinfo=datetime.timezone.utc)+datetime.timedelta(minutes=i*3)).isoformat()
             sql(addresses[0],f"INSERT INTO compaction_bench VALUES ('host{i%4}',{i},'{ts}')")
             sql(addresses[0],"ADMIN FLUSH_TABLE('compaction_bench')")
+        sql(addresses[0],"CREATE TABLE tied_bench (host STRING PRIMARY KEY, ts TIMESTAMP(9) TIME INDEX)")
+        for i in range(6):
+            sql(addresses[0],f"INSERT INTO tied_bench VALUES ('host{i}','2026-07-24T12:00:00Z')")
+            sql(addresses[0],"ADMIN FLUSH_TABLE('tied_bench')")
+        env={**os.environ,"COMPACTCTL_E2E_PORT":str(addresses[2])}
+        with (root/"manifest-ties-test.log").open("w") as out:
+            subprocess.run(["go","test","-race","-run","^TestManifestTieOrderingE2E$","-v","."],cwd=HERE,env=env,stdout=out,stderr=subprocess.STDOUT,check=True,timeout=120)
     with server(args.greptime,root/"standalone",addresses):
         env={**os.environ,"COMPACTCTL_E2E_PORT":str(addresses[2]),"COMPACTCTL_BUSY_RESULTS":str(root/"busy-results.json")}
         with (root/"busy-test.log").open("w") as out:

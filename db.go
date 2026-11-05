@@ -33,12 +33,14 @@ import (
 	"time"
 )
 
+// Audit records SQL activity and retains write errors to stop further submissions.
 type Audit struct {
 	err  error
 	mu   sync.Mutex
 	file *os.File
 }
 
+// Write appends an audit event unless logging is disabled or has failed.
 func (a *Audit) Write(kind string, value any) {
 	if a == nil || a.file == nil {
 		return
@@ -52,6 +54,7 @@ func (a *Audit) Write(kind string, value any) {
 	}
 }
 
+// Err returns the first audit write failure, if any.
 func (a *Audit) Err() error {
 	if a == nil {
 		return nil
@@ -61,6 +64,7 @@ func (a *Audit) Err() error {
 	return a.err
 }
 
+// Store performs bounded MySQL reads and serial compaction requests.
 type Store struct {
 	metricTables sync.Map // table ID -> bool; populated by Diagnose before scanning.
 	db           *sql.DB
@@ -68,12 +72,16 @@ type Store struct {
 	limit        int
 	audit        *Audit
 }
+
+// Region contains one region heartbeat's SST and manifest statistics.
 type Region struct {
 	Manifest     sql.NullInt64
 	ID           uint64
 	Files, Bytes uint64
 	Min, Max     sql.NullInt64
 }
+
+// Diagnosis identifies physical table storage and its observed time bounds.
 type Diagnosis struct {
 	Metric     bool
 	Table      string
@@ -83,6 +91,7 @@ type Diagnosis struct {
 	Window     string
 }
 
+// Totals sums file counts and bytes across the reported regions.
 func (d Diagnosis) Totals() (n, b uint64) {
 	for _, r := range d.Regions {
 		n += r.Files
@@ -91,12 +100,15 @@ func (d Diagnosis) Totals() (n, b uint64) {
 	return
 }
 
+// File is an SST manifest entry with nanosecond time bounds.
 type File struct {
 	Region   uint64
 	ID       string
 	Min, Max int64
 	Bytes    uint64
 }
+
+// Window holds a bounded manifest sample for a half-open max_ts range.
 type Window struct {
 	Start, End time.Time
 	Files      []File
@@ -105,6 +117,7 @@ type Window struct {
 	Calls      int
 }
 
+// Fingerprint hashes sorted region/file identities to detect sample changes.
 func (w Window) Fingerprint() string {
 	s := make([]string, 0, len(w.Files))
 	for _, f := range w.Files {
@@ -113,12 +126,16 @@ func (w Window) Fingerprint() string {
 	sort.Strings(s)
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(s, "\n"))))
 }
+
+// Count formats the observed count, marking capped samples as lower bounds.
 func (w Window) Count() string {
 	if w.Limited {
 		return fmt.Sprintf(">=%d", len(w.Files))
 	}
 	return strconv.Itoa(len(w.Files))
 }
+
+// Bytes sums sizes of returned files, excluding any unsampled entries.
 func (w Window) Bytes() uint64 {
 	var b uint64
 	for _, f := range w.Files {
@@ -152,6 +169,8 @@ func (s *Store) query(ctx context.Context, operation, q string, read func(*sql.R
 	s.audit.Write("query-result", map[string]any{"operation": operation, "elapsed": time.Since(begin).String(), "ok": err == nil})
 	return err
 }
+
+// Regions reads up to 257 rows and rejects missing, duplicate or excess regions.
 func (s *Store) Regions(ctx context.Context, id uint64) ([]Region, error) {
 	var result []Region
 	q := fmt.Sprintf("SELECT region_id, sst_num, sst_size, manifest_size, CAST(min_timestamp AS BIGINT), CAST(max_timestamp AS BIGINT) FROM information_schema.region_statistics WHERE table_id = %d LIMIT 257", id)
@@ -186,15 +205,17 @@ func (s *Store) Regions(ctx context.Context, id uint64) ([]Region, error) {
 	}
 	return result, nil
 }
+
+// Diagnose resolves physical storage and reads bounded statistics and time limits.
 func (s *Store) Diagnose(ctx context.Context, table, database string) (Diagnosis, error) {
-	d := Diagnosis{Table: table}
+	diagnosis := Diagnosis{Table: table}
 	if strings.TrimSpace(table) == "" {
-		return d, fmt.Errorf("table is required; enter a table name in database %s", database)
+		return diagnosis, fmt.Errorf("table is required; enter a table name in database %s", database)
 	}
-	q := "SELECT table_id, engine, create_options FROM information_schema.tables WHERE table_schema = " + literal(database) + " AND table_name = " + literal(table) + " LIMIT 2"
+	query := "SELECT table_id, engine, create_options FROM information_schema.tables WHERE table_schema = " + literal(database) + " AND table_name = " + literal(table) + " LIMIT 2"
 	var ids []uint64
 	var engine, options sql.NullString
-	err := s.query(ctx, "Find table", q, func(rows *sql.Rows) error {
+	err := s.query(ctx, "Find table", query, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var id uint64
 			if e := rows.Scan(&id, &engine, &options); e != nil {
@@ -205,31 +226,31 @@ func (s *Store) Diagnose(ctx context.Context, table, database string) (Diagnosis
 		return nil
 	})
 	if err != nil {
-		return d, err
+		return diagnosis, err
 	}
 	if len(ids) != 1 {
-		return d, fmt.Errorf("table %s.%s was not found uniquely; check database, table name, and permissions", database, table)
+		return diagnosis, fmt.Errorf("table %s.%s was not found uniquely; check database, table name, and permissions", database, table)
 	}
-	d.ID = ids[0]
+	diagnosis.ID = ids[0]
 	if physical := physicalTable(options.String); physical != "" {
-		return d, &LogicalTableError{Table: table, Physical: physical}
+		return diagnosis, &LogicalTableError{Table: table, Physical: physical}
 	}
 
-	d.Metric = strings.EqualFold(engine.String, "metric")
-	s.metricTables.Store(d.ID, d.Metric)
-	d.Regions, err = s.Regions(ctx, d.ID)
+	diagnosis.Metric = strings.EqualFold(engine.String, "metric")
+	s.metricTables.Store(diagnosis.ID, diagnosis.Metric)
+	diagnosis.Regions, err = s.Regions(ctx, diagnosis.ID)
 	if err != nil {
-		return d, err
+		return diagnosis, err
 	}
-	if len(d.Regions) == 0 {
-		return d, fmt.Errorf("no physical regions for %s; select the physical Mito table, not a logical metric table", table)
+	if len(diagnosis.Regions) == 0 {
+		return diagnosis, fmt.Errorf("no physical regions for %s; select the physical Mito table, not a logical metric table", table)
 	}
 	for _, edge := range []struct {
 		col, order string
 		dest       *time.Time
-	}{{"min_ts", "ASC", &d.Start}, {"max_ts", "DESC", &d.End}} {
-		q = fmt.Sprintf("SELECT CAST(%s AS BIGINT) AS boundary_ns FROM information_schema.ssts_manifest WHERE %s ORDER BY %s %s LIMIT 1", edge.col, s.manifestScope(d.ID), edge.col, edge.order)
-		err = s.query(ctx, "Find SST time boundary", q, func(rows *sql.Rows) error {
+	}{{"min_ts", "ASC", &diagnosis.Start}, {"max_ts", "DESC", &diagnosis.End}} {
+		query = fmt.Sprintf("SELECT CAST(%s AS BIGINT) AS boundary_ns FROM information_schema.ssts_manifest WHERE %s ORDER BY %s %s LIMIT 1", edge.col, s.manifestScope(diagnosis.ID), edge.col, edge.order)
+		err = s.query(ctx, "Find SST time boundary", query, func(rows *sql.Rows) error {
 			if !rows.Next() {
 				return fmt.Errorf("table has no SST files; flush existing data or select another table")
 			}
@@ -244,29 +265,29 @@ func (s *Store) Diagnose(ctx context.Context, table, database string) (Diagnosis
 			return nil
 		})
 		if err != nil {
-			return d, err
+			return diagnosis, err
 		}
 	}
-	d.End = d.End.Add(time.Nanosecond)
-	q = fmt.Sprintf("SELECT compaction_time_window FROM information_schema.region_info WHERE region_id = %d LIMIT 1", d.Regions[0].ID)
-	err = s.query(ctx, "Read TWCS window", q, func(rows *sql.Rows) error {
+	diagnosis.End = diagnosis.End.Add(time.Nanosecond)
+	query = fmt.Sprintf("SELECT compaction_time_window FROM information_schema.region_info WHERE region_id = %d LIMIT 1", diagnosis.Regions[0].ID)
+	err = s.query(ctx, "Read TWCS window", query, func(rows *sql.Rows) error {
 		if rows.Next() {
 			var value sql.NullString
 			if e := rows.Scan(&value); e != nil {
 				return e
 			}
-			d.Window = value.String
+			diagnosis.Window = value.String
 		}
 		return nil
 	})
 	if err != nil {
-		return d, err
+		return diagnosis, err
 	}
-	if d.Window == "" {
-		d.Window = "unknown"
+	if diagnosis.Window == "" {
+		diagnosis.Window = "unknown"
 	}
-	s.audit.Write("diagnosis", d)
-	return d, nil
+	s.audit.Write("diagnosis", diagnosis)
+	return diagnosis, nil
 }
 
 // Metric metadata SSTs have timestamp zero and are not time-series data.
@@ -280,30 +301,33 @@ func (s *Store) manifestScope(id uint64) string {
 	return q
 }
 
+// Probe samples files by max_ts in [start, end), subject to the configured LIMIT.
 func (s *Store) Probe(ctx context.Context, id uint64, start, end time.Time) (Window, error) {
-	w := Window{Start: start, End: end, State: "scanned"}
+	window := Window{Start: start, End: end, State: "scanned"}
 	// Assign each SST by max_ts, matching TWCS's bucket assignment. No aggregate
 	// outside a LIMIT: a capped result is a lower bound, never an exact count.
-	q := fmt.Sprintf("SELECT region_id, file_id, CAST(min_ts AS BIGINT) AS min_ns, CAST(max_ts AS BIGINT) AS max_ns, file_size FROM information_schema.ssts_manifest WHERE %s AND max_ts >= %s::TIMESTAMP_NS AND max_ts < %s::TIMESTAMP_NS ORDER BY max_ts ASC, min_ts ASC LIMIT %d", s.manifestScope(id), literal(stamp(start)), literal(stamp(end)), s.limit)
+	q := fmt.Sprintf("SELECT region_id, file_id, CAST(min_ts AS BIGINT) AS min_ns, CAST(max_ts AS BIGINT) AS max_ns, file_size FROM information_schema.ssts_manifest WHERE %s AND max_ts >= %s::TIMESTAMP_NS AND max_ts < %s::TIMESTAMP_NS ORDER BY max_ts ASC, min_ts ASC, region_id ASC, file_id ASC LIMIT %d", s.manifestScope(id), literal(stamp(start)), literal(stamp(end)), s.limit)
 	err := s.query(ctx, "Scan manifest window "+stamp(start)+" .. "+stamp(end), q, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var f File
 			if e := rows.Scan(&f.Region, &f.ID, &f.Min, &f.Max, &f.Bytes); e != nil {
 				return e
 			}
-			w.Files = append(w.Files, f)
+			window.Files = append(window.Files, f)
 		}
 		return nil
 	})
-	w.Limited = len(w.Files) >= s.limit
-	if w.Limited {
-		w.State = "limited (lower bound)"
+	window.Limited = len(window.Files) >= s.limit
+	if window.Limited {
+		window.State = "limited (lower bound)"
 	}
 	if err == nil {
-		s.audit.Write("manifest-snapshot", w)
+		s.audit.Write("manifest-snapshot", window)
 	}
-	return w, err
+	return window, err
 }
+
+// Compact submits one ADMIN request and distinguishes known rejection from uncertainty.
 func (s *Store) Compact(ctx context.Context, d Diagnosis, w Window, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -338,17 +362,21 @@ func physicalTable(options string) string {
 	return ""
 }
 
+// LogicalTableError identifies a logical table whose physical scope must be selected.
 type LogicalTableError struct{ Table, Physical string }
 
+// Error explains the required physical table selection.
 func (e *LogicalTableError) Error() string {
 	return fmt.Sprintf("%s is a logical metric table. SST and manifest statistics are N/A; storage is shared on physical table %s. No compaction was submitted", e.Table, e.Physical)
 }
 
+// TableChoice identifies a table returned by bounded discovery.
 type TableChoice struct {
 	Name, Engine string
 	ID           uint64
 }
 
+// Tables lists at most 200 tables in the selected database.
 func (s *Store) Tables(ctx context.Context, database string) ([]TableChoice, error) {
 	var result []TableChoice
 	q := "SELECT table_name, table_id, engine FROM information_schema.tables WHERE table_schema = " + literal(database) + " ORDER BY table_name LIMIT 200"
@@ -374,15 +402,19 @@ func (s *Store) Tables(ctx context.Context, database string) ([]TableChoice, err
 
 var manualBusy = regexp.MustCompile(`Manual compaction is already running for region [0-9]+(?:\([0-9]+, [0-9]+\))?\.`)
 
+// AdminError preserves the SQL cause and the known or uncertain request outcome.
 type AdminError struct {
 	Kind  string
 	Cause error
 }
 
+// Error describes the ADMIN outcome and its underlying SQL error.
 func (e *AdminError) Error() string {
 	if e.Kind == "admin_busy" {
 		return fmt.Sprintf("ADMIN rejected: another manual compaction is running: %v. No automatic retry; inspect progress before resuming", e.Cause)
 	}
 	return fmt.Sprintf("ADMIN failed or outcome is unknown: %v. No automatic retry; server work may continue", e.Cause)
 }
+
+// Unwrap exposes the underlying SQL error.
 func (e *AdminError) Unwrap() error { return e.Cause }

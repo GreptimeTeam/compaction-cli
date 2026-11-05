@@ -111,3 +111,44 @@ func TestOutputContractsAndEmbeddedSkill(t *testing.T) {
 		t.Fatal("embedded skill differs")
 	}
 }
+
+func TestCompletedResumeReportsOutputFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	state := State{Version: schemaVersion, Plan: testPlan(t), Status: "complete", Index: 1}
+	if err := saveJSON(path, state, true); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.Create(filepath.Join(t.TempDir(), "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code := command([]string{"resume", "--state", path, "--execute"}, output); code != 7 {
+		t.Fatalf("exit=%d", code)
+	}
+}
+
+func TestStateReplacementPreservesUnknownOutcome(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	state := State{Version: schemaVersion, Plan: testPlan(t), Status: "ready"}
+	if err := saveJSON(path, state, true); err != nil {
+		t.Fatal(err)
+	}
+	state.Status, state.Calls = "admin_in_flight", 1
+	if err := saveJSON(path, state, false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := readState(path)
+	if err != nil || loaded.Status != state.Status || loaded.Calls != 1 {
+		t.Fatalf("state=%+v err=%v", loaded, err)
+	}
+	loaded.Index = -1
+	if err := saveJSON(path, loaded, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readState(path); err == nil {
+		t.Fatal("accepted invalid checkpoint")
+	}
+}

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+// Command greptime-compaction-cli inspects SSTs and runs bounded compaction plans.
 package main
 
 import (
@@ -34,6 +35,7 @@ import (
 	"golang.org/x/term"
 )
 
+// Options holds validated connection, planning and execution settings.
 type Options struct {
 	Provided                              map[string]bool `json:"-"`
 	Output                                string
@@ -51,93 +53,101 @@ type Options struct {
 
 func parseOptions(args []string) (Options, error) {
 	fs := flag.NewFlagSet("greptime-compaction-cli", flag.ContinueOnError)
-	var o Options
-	fs.StringVar(&o.Output, "o", "jsonl", "Output format: jsonl, json, markdown")
-	fs.StringVar(&o.Output, "output", "jsonl", "Output format: jsonl, json, markdown")
-	fs.StringVar(&o.Start, "start", "", "Inclusive RFC3339 start (plan)")
-	fs.StringVar(&o.End, "end", "", "Exclusive RFC3339 end (plan)")
-	fs.StringVar(&o.Save, "save", "", "New plan JSON file (plan)")
-	fs.StringVar(&o.PlanPath, "plan", "", "Saved plan JSON file (run)")
-	fs.StringVar(&o.StatePath, "state", "", "Execution state JSON file (run/resume/status)")
-	fs.BoolVar(&o.Execute, "execute", false, "Explicitly authorize ADMIN submissions")
-	fs.BoolVar(&o.AckUnknown, "ack-unknown", false, "Acknowledge previous ADMIN may have been accepted (resume)")
-	fs.BoolVar(&o.PasswordStdin, "password-stdin", false, "Read password from stdin; no terminal required")
-	fs.StringVar(&o.Host, "host", "127.0.0.1", "GreptimeDB MySQL host")
-	fs.IntVar(&o.Port, "port", 4002, "MySQL port")
-	fs.StringVar(&o.User, "user", "root", "MySQL username")
-	fs.StringVar(&o.Database, "database", "public", "Database/schema")
-	fs.StringVar(&o.Table, "table", "", "Target table name")
-	fs.BoolVar(&o.Password, "password", false, "Prompt for password without echo (no value)")
-	fs.BoolVar(&o.Password, "p", false, "Prompt for password without echo")
-	fs.IntVar(&o.Limit, "limit", 1000, "Maximum returned rows per manifest query (2..1000)")
-	fs.IntVar(&o.Target, "target-files", 50, "Stop a request window when its exact SST count is at most this")
-	fs.IntVar(&o.MaxCalls, "max-calls", 100, "Maximum ADMIN submissions per run")
-	fs.DurationVar(&o.Timeout, "query-timeout", 10*time.Second, "Read query timeout")
-	fs.DurationVar(&o.AdminTimeout, "admin-timeout", 5*time.Minute, "ADMIN response timeout; never automatically retried")
-	fs.DurationVar(&o.Poll, "poll", 2*time.Second, "Serial observation query interval (at least 1s)")
-	fs.DurationVar(&o.Quiet, "quiet", 10*time.Second, "Required unchanged observations before another ADMIN")
-	fs.DurationVar(&o.Observe, "observe-timeout", 2*time.Minute, "Maximum observation time after each ADMIN")
-	fs.StringVar(&o.Log, "log", "", "Optional JSONL query/action audit path; must not exist")
-	fs.StringVar(&o.Config, "config", "", "TOML configuration file; explicit CLI flags override file values")
-	fs.IntVar(&o.ScanBudget, "scan-budget", 1024, "Maximum manifest queries per preview (1..4096)")
-	fs.DurationVar(&o.MinWindow, "min-window", time.Minute, "Minimum adaptive request window (at least 1s)")
-	fs.DurationVar(&o.RequestWindow, "request-window", time.Hour, "Initial planning window duration")
-	fs.DurationVar(&o.ScanInterval, "scan-interval", 500*time.Millisecond, "Delay between scan queries (at least 100ms)")
+	var options Options
+	fs.StringVar(&options.Output, "o", "jsonl", "Output format: jsonl, json, markdown")
+	fs.StringVar(&options.Output, "output", "jsonl", "Output format: jsonl, json, markdown")
+	fs.StringVar(&options.Start, "start", "", "Inclusive RFC3339 start (plan)")
+	fs.StringVar(&options.End, "end", "", "Exclusive RFC3339 end (plan)")
+	fs.StringVar(&options.Save, "save", "", "New plan JSON file (plan)")
+	fs.StringVar(&options.PlanPath, "plan", "", "Saved plan JSON file (run)")
+	fs.StringVar(&options.StatePath, "state", "", "Execution state JSON file (run/resume/status)")
+	fs.BoolVar(&options.Execute, "execute", false, "Explicitly authorize ADMIN submissions")
+	fs.BoolVar(&options.AckUnknown, "ack-unknown", false, "Acknowledge previous ADMIN may have been accepted (resume)")
+	fs.BoolVar(&options.PasswordStdin, "password-stdin", false, "Read password from stdin; no terminal required")
+	fs.StringVar(&options.Host, "host", "127.0.0.1", "GreptimeDB MySQL host")
+	fs.IntVar(&options.Port, "port", 4002, "MySQL port")
+	fs.StringVar(&options.User, "user", "root", "MySQL username")
+	fs.StringVar(&options.Database, "database", "public", "Database/schema")
+	fs.StringVar(&options.Table, "table", "", "Target table name")
+	fs.BoolVar(&options.Password, "password", false, "Prompt for password without echo (no value)")
+	fs.BoolVar(&options.Password, "p", false, "Prompt for password without echo")
+	fs.IntVar(&options.Limit, "limit", 1000, "Maximum returned rows per manifest query (2..1000)")
+	fs.IntVar(&options.Target, "target-files", 50, "Stop a request window when its exact SST count is at most this")
+	fs.IntVar(&options.MaxCalls, "max-calls", 100, "Maximum ADMIN submissions per run")
+	fs.DurationVar(&options.Timeout, "query-timeout", 10*time.Second, "Read query timeout")
+	fs.DurationVar(&options.AdminTimeout, "admin-timeout", 5*time.Minute, "ADMIN response timeout; never automatically retried")
+	fs.DurationVar(&options.Poll, "poll", 2*time.Second, "Serial observation query interval (at least 1s)")
+	fs.DurationVar(&options.Quiet, "quiet", 10*time.Second, "Required unchanged observations before another ADMIN")
+	fs.DurationVar(&options.Observe, "observe-timeout", 2*time.Minute, "Maximum observation time after each ADMIN")
+	fs.StringVar(&options.Log, "log", "", "Optional JSONL query/action audit path; must not exist")
+	fs.StringVar(&options.Config, "config", "", "TOML configuration file; explicit CLI flags override file values")
+	fs.IntVar(&options.ScanBudget, "scan-budget", 1024, "Maximum manifest queries per preview (1..4096)")
+	fs.DurationVar(&options.MinWindow, "min-window", time.Minute, "Minimum adaptive request window (at least 1s)")
+	fs.DurationVar(&options.RequestWindow, "request-window", time.Hour, "Initial planning window duration")
+	fs.DurationVar(&options.ScanInterval, "scan-interval", 500*time.Millisecond, "Delay between scan queries (at least 100ms)")
 	if err := fs.Parse(args); err != nil {
-		return o, err
+		return options, err
 	}
 	if fs.NArg() != 0 {
-		return o, fmt.Errorf("unexpected arguments: use named flags; passwords must be entered at the prompt")
+		return options, fmt.Errorf("unexpected arguments: use named flags; passwords must be entered at the prompt")
 	}
 	explicit := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
-	o.Provided = explicit
+	options.Provided = explicit
 	if explicit["o"] || explicit["output"] {
 		explicit["o"] = true
 		explicit["output"] = true
 	}
-	if o.Config != "" {
-		f, err := os.Open(o.Config)
-		if err != nil {
-			return o, fmt.Errorf("open config: %w", err)
+	if options.Config != "" {
+		if err := loadConfig(fs, options.Config, explicit); err != nil {
+			return options, err
 		}
-		defer func() { _ = f.Close() }()
-		body, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
-		if err != nil {
-			return o, fmt.Errorf("read config: %w", err)
+	}
+	return options, options.Validate()
+}
+func loadConfig(fs *flag.FlagSet, path string, explicit map[string]bool) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open config: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	body, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	if len(body) > 1<<20 {
+		return fmt.Errorf("config exceeds 1 MiB")
+	}
+	var values map[string]any
+	if err = toml.Unmarshal(body, &values); err != nil {
+		return fmt.Errorf("parse config %s: %w", path, err)
+	}
+	for key, value := range values {
+		if key == "password" || key == "p" || key == "config" || key == "execute" || key == "ack-unknown" || key == "password-stdin" {
+			return fmt.Errorf("config key %q is not allowed; use -p for an interactive password prompt", key)
 		}
-		if len(body) > 1<<20 {
-			return o, fmt.Errorf("config exceeds 1 MiB")
+		if fs.Lookup(key) == nil {
+			return fmt.Errorf("unknown config key %q; see --help for supported names", key)
 		}
-		var values map[string]any
-		if err = toml.Unmarshal(body, &values); err != nil {
-			return o, fmt.Errorf("parse config %s: %w", o.Config, err)
+		var text string
+		switch v := value.(type) {
+		case string:
+			text = v
+		case int64:
+			text = strconv.FormatInt(v, 10)
+		default:
+			return fmt.Errorf("config key %q must be a string or integer", key)
 		}
-		for key, value := range values {
-			if key == "password" || key == "p" || key == "config" || key == "execute" || key == "ack-unknown" || key == "password-stdin" {
-				return o, fmt.Errorf("config key %q is not allowed; use -p for an interactive password prompt", key)
-			}
-			if fs.Lookup(key) == nil {
-				return o, fmt.Errorf("unknown config key %q; see --help for supported names", key)
-			}
-			var text string
-			switch v := value.(type) {
-			case string:
-				text = v
-			case int64:
-				text = strconv.FormatInt(v, 10)
-			default:
-				return o, fmt.Errorf("config key %q must be a string or integer", key)
-			}
-			if !explicit[key] {
-				if err = fs.Set(key, text); err != nil {
-					return o, fmt.Errorf("config key %q: %w", key, err)
-				}
+		if !explicit[key] {
+			if err = fs.Set(key, text); err != nil {
+				return fmt.Errorf("config key %q: %w", key, err)
 			}
 		}
 	}
-	return o, o.Validate()
+	return nil
 }
+
+// Validate checks option bounds and relationships before any database access.
 func (o Options) Validate() error {
 	if o.Output != "jsonl" && o.Output != "json" && o.Output != "markdown" {
 		return fmt.Errorf("output must be jsonl, json, or markdown")
@@ -146,23 +156,11 @@ func (o Options) Validate() error {
 		return fmt.Errorf("choose -p or --password-stdin")
 	}
 
-	if o.ScanBudget < 1 || o.ScanBudget > 4096 {
-		return fmt.Errorf("scan-budget must be 1..4096")
-	}
-	if o.MinWindow < time.Second || o.RequestWindow < o.MinWindow {
-		return fmt.Errorf("require min-window >= 1s and request-window >= min-window")
-	}
-	if o.ScanInterval < 100*time.Millisecond {
-		return fmt.Errorf("scan-interval must be at least 100ms")
+	if err := o.validateScan(); err != nil {
+		return err
 	}
 	if o.Port < 1 || o.Port > 65535 {
 		return fmt.Errorf("--port must be 1..65535")
-	}
-	if o.Limit < 2 || o.Limit > 1000 {
-		return fmt.Errorf("--limit must be 2..1000; manifest scans are always bounded")
-	}
-	if o.Target < 1 || o.Target >= o.Limit {
-		return fmt.Errorf("--target-files must be positive and less than --limit")
 	}
 	if o.MaxCalls < 1 || o.Timeout <= 0 || o.AdminTimeout <= 0 {
 		return fmt.Errorf("timeouts and --max-calls must be positive")
@@ -175,6 +173,25 @@ func (o Options) Validate() error {
 	}
 	return nil
 }
+func (o Options) validateScan() error {
+	if o.Limit < 2 || o.Limit > 1000 {
+		return fmt.Errorf("--limit must be 2..1000; manifest scans are always bounded")
+	}
+	if o.Target < 1 || o.Target >= o.Limit {
+		return fmt.Errorf("--target-files must be positive and less than --limit")
+	}
+	if o.ScanBudget < 1 || o.ScanBudget > 4096 {
+		return fmt.Errorf("scan-budget must be 1..4096")
+	}
+	if o.MinWindow < time.Second || o.RequestWindow < o.MinWindow {
+		return fmt.Errorf("require min-window >= 1s and request-window >= min-window")
+	}
+	if o.ScanInterval < 100*time.Millisecond {
+		return fmt.Errorf("scan-interval must be at least 100ms")
+	}
+	return nil
+}
+
 func readPassword() (string, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return "", fmt.Errorf("password required: use --password-stdin for agents, or an interactive terminal with -p")

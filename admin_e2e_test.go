@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,4 +90,43 @@ func TestBusyRejectionE2E(t *testing.T) {
 		t.Fatalf("accepted=%d busy=%d responses=%s", accepted, busyCount, strings.Join(results, "\n"))
 	}
 	fmt.Printf("accepted=%d classified_busy=%d total=%d\n", accepted, busyCount, clients)
+}
+
+func TestManifestTieOrderingE2E(t *testing.T) {
+	port := os.Getenv("COMPACTCTL_E2E_PORT")
+	if port == "" {
+		t.Skip("requires dedicated standalone with compaction disabled")
+	}
+	options, err := parseOptions([]string{"--port", port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := connect(options, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	store := &Store{db: db, timeout: 10 * time.Second, limit: 100}
+	ctx := context.Background()
+	diagnosis, err := store.Diagnose(ctx, "tied_bench", "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := store.Probe(ctx, diagnosis.ID, diagnosis.Start, diagnosis.End)
+	if err != nil || all.Limited || len(all.Files) != 6 {
+		t.Fatalf("sample=%+v err=%v", all, err)
+	}
+	sort.Slice(all.Files, func(i, j int) bool { return all.Files[i].ID < all.Files[j].ID })
+	store.limit = 2
+	for range 3 {
+		sample, err := store.Probe(ctx, diagnosis.ID, diagnosis.Start, diagnosis.End)
+		if err != nil || !sample.Limited || len(sample.Files) != 2 {
+			t.Fatalf("sample=%+v err=%v", sample, err)
+		}
+		for i, file := range sample.Files {
+			if file.ID != all.Files[i].ID {
+				t.Fatalf("unstable tie order: got %s want %s", file.ID, all.Files[i].ID)
+			}
+		}
+	}
 }

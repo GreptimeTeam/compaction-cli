@@ -166,3 +166,42 @@ func TestObservationTimeoutStopsFurtherSubmissions(t *testing.T) {
 		t.Fatalf("calls %d err %v", f.calls, err)
 	}
 }
+
+func TestScanExtremeRangesRespectBudget(t *testing.T) {
+	start := time.Date(1700, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name      string
+		end       time.Time
+		budget    int
+		wantError bool
+	}{
+		{"saturated", time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC), 1, true},
+		{"saturated multiple probes", time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC), 3, true},
+		{"maximum duration", start.Add(time.Duration(1<<63 - 1)), 1, false},
+		{"maximum duration divided", start.Add(time.Duration(1<<63 - 1)), 3, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &fakeBackend{probe: func(a, b time.Time) Window {
+				if !b.After(a) {
+					t.Fatal("scan moved backwards")
+				}
+				return Window{Start: a, End: b, Limited: true}
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			windows, err := Scan(ctx, backend, 1, start, test.end, time.Hour, Options{ScanBudget: test.budget, MinWindow: time.Second}, func(Window) {})
+			if test.wantError {
+				if err == nil || backend.queries != 0 {
+					t.Fatalf("err=%v queries=%d", err, backend.queries)
+				}
+				return
+			}
+			if err != nil || backend.queries > test.budget || len(windows) == 0 {
+				t.Fatalf("err=%v queries=%d", err, backend.queries)
+			}
+			if !windows[0].Start.Equal(start) || !windows[len(windows)-1].End.Equal(test.end) {
+				t.Fatal("coverage lost")
+			}
+		})
+	}
+}

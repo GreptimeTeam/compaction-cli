@@ -1,0 +1,20 @@
+# Explicit command-line flags override this file. No passwords in this file.
+host = "127.0.0.1"
+port = 4002
+user = "root"
+database = "public"
+# table = "prober_physical_table"
+
+limit = 200
+scan-budget = 128
+scan-interval = "250ms"
+request-window = "1h"
+min-window = "1m"
+target-files = 50
+max-calls = 100
+query-timeout = "10s"
+admin-timeout = "5m"
+poll = "2s"
+quiet = "10s"
+observe-timeout = "2m"
+# log = "compaction-session.jsonl" # Must not already exist.

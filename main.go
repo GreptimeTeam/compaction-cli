@@ -1,0 +1,231 @@
+/*
+ * Copyright 2023 Greptime Team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/pelletier/go-toml/v2"
+	"golang.org/x/term"
+)
+
+type Options struct {
+	Provided                              map[string]bool `json:"-"`
+	Output                                string
+	Start, End, Save, PlanPath, StatePath string
+	Execute, AckUnknown, PasswordStdin    bool
+
+	Config                                      string
+	ScanBudget                                  int
+	MinWindow, RequestWindow, ScanInterval      time.Duration
+	Host, User, Database, Table, Log            string
+	Port, Limit, Target, MaxCalls               int
+	Password                                    bool
+	Timeout, AdminTimeout, Poll, Quiet, Observe time.Duration
+}
+
+func parseOptions(args []string) (Options, error) {
+	fs := flag.NewFlagSet("greptime-compaction-cli", flag.ContinueOnError)
+	var o Options
+	fs.StringVar(&o.Output, "o", "jsonl", "Output format: jsonl, json, markdown")
+	fs.StringVar(&o.Output, "output", "jsonl", "Output format: jsonl, json, markdown")
+	fs.StringVar(&o.Start, "start", "", "Inclusive RFC3339 start (plan)")
+	fs.StringVar(&o.End, "end", "", "Exclusive RFC3339 end (plan)")
+	fs.StringVar(&o.Save, "save", "", "New plan JSON file (plan)")
+	fs.StringVar(&o.PlanPath, "plan", "", "Saved plan JSON file (run)")
+	fs.StringVar(&o.StatePath, "state", "", "Execution state JSON file (run/resume/status)")
+	fs.BoolVar(&o.Execute, "execute", false, "Explicitly authorize ADMIN submissions")
+	fs.BoolVar(&o.AckUnknown, "ack-unknown", false, "Acknowledge previous ADMIN may have been accepted (resume)")
+	fs.BoolVar(&o.PasswordStdin, "password-stdin", false, "Read password from stdin; no terminal required")
+	fs.StringVar(&o.Host, "host", "127.0.0.1", "GreptimeDB MySQL host")
+	fs.IntVar(&o.Port, "port", 4002, "MySQL port")
+	fs.StringVar(&o.User, "user", "root", "MySQL username")
+	fs.StringVar(&o.Database, "database", "public", "Database/schema")
+	fs.StringVar(&o.Table, "table", "", "Target table name")
+	fs.BoolVar(&o.Password, "password", false, "Prompt for password without echo (no value)")
+	fs.BoolVar(&o.Password, "p", false, "Prompt for password without echo")
+	fs.IntVar(&o.Limit, "limit", 200, "Maximum returned rows per manifest query (2..1000)")
+	fs.IntVar(&o.Target, "target-files", 50, "Stop a request window when its exact SST count is at most this")
+	fs.IntVar(&o.MaxCalls, "max-calls", 100, "Maximum ADMIN submissions per run")
+	fs.DurationVar(&o.Timeout, "query-timeout", 10*time.Second, "Read query timeout")
+	fs.DurationVar(&o.AdminTimeout, "admin-timeout", 5*time.Minute, "ADMIN response timeout; never automatically retried")
+	fs.DurationVar(&o.Poll, "poll", 2*time.Second, "Serial observation query interval (at least 1s)")
+	fs.DurationVar(&o.Quiet, "quiet", 10*time.Second, "Required unchanged observations before another ADMIN")
+	fs.DurationVar(&o.Observe, "observe-timeout", 2*time.Minute, "Maximum observation time after each ADMIN")
+	fs.StringVar(&o.Log, "log", "", "Optional JSONL query/action audit path; must not exist")
+	fs.StringVar(&o.Config, "config", "", "TOML configuration file; explicit CLI flags override file values")
+	fs.IntVar(&o.ScanBudget, "scan-budget", 128, "Maximum manifest queries per preview (1..4096)")
+	fs.DurationVar(&o.MinWindow, "min-window", time.Minute, "Minimum adaptive request window (at least 1s)")
+	fs.DurationVar(&o.RequestWindow, "request-window", time.Hour, "Initial planning window duration")
+	fs.DurationVar(&o.ScanInterval, "scan-interval", 250*time.Millisecond, "Delay between scan queries (at least 100ms)")
+	if err := fs.Parse(args); err != nil {
+		return o, err
+	}
+	if fs.NArg() != 0 {
+		return o, fmt.Errorf("unexpected arguments: use named flags; passwords must be entered at the prompt")
+	}
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	o.Provided = explicit
+	if explicit["o"] || explicit["output"] {
+		explicit["o"] = true
+		explicit["output"] = true
+	}
+	if o.Config != "" {
+		f, err := os.Open(o.Config)
+		if err != nil {
+			return o, fmt.Errorf("open config: %w", err)
+		}
+		defer func() { _ = f.Close() }()
+		body, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+		if err != nil {
+			return o, fmt.Errorf("read config: %w", err)
+		}
+		if len(body) > 1<<20 {
+			return o, fmt.Errorf("config exceeds 1 MiB")
+		}
+		var values map[string]any
+		if err = toml.Unmarshal(body, &values); err != nil {
+			return o, fmt.Errorf("parse config %s: %w", o.Config, err)
+		}
+		for key, value := range values {
+			if key == "password" || key == "p" || key == "config" || key == "execute" || key == "ack-unknown" || key == "password-stdin" {
+				return o, fmt.Errorf("config key %q is not allowed; use -p for an interactive password prompt", key)
+			}
+			if fs.Lookup(key) == nil {
+				return o, fmt.Errorf("unknown config key %q; see --help for supported names", key)
+			}
+			var text string
+			switch v := value.(type) {
+			case string:
+				text = v
+			case int64:
+				text = strconv.FormatInt(v, 10)
+			default:
+				return o, fmt.Errorf("config key %q must be a string or integer", key)
+			}
+			if !explicit[key] {
+				if err = fs.Set(key, text); err != nil {
+					return o, fmt.Errorf("config key %q: %w", key, err)
+				}
+			}
+		}
+	}
+	return o, o.Validate()
+}
+func (o Options) Validate() error {
+	if o.Output != "jsonl" && o.Output != "json" && o.Output != "markdown" {
+		return fmt.Errorf("output must be jsonl, json, or markdown")
+	}
+	if o.Password && o.PasswordStdin {
+		return fmt.Errorf("choose -p or --password-stdin")
+	}
+
+	if o.ScanBudget < 1 || o.ScanBudget > 4096 {
+		return fmt.Errorf("scan-budget must be 1..4096")
+	}
+	if o.MinWindow < time.Second || o.RequestWindow < o.MinWindow {
+		return fmt.Errorf("require min-window >= 1s and request-window >= min-window")
+	}
+	if o.ScanInterval < 100*time.Millisecond {
+		return fmt.Errorf("scan-interval must be at least 100ms")
+	}
+	if o.Port < 1 || o.Port > 65535 {
+		return fmt.Errorf("--port must be 1..65535")
+	}
+	if o.Limit < 2 || o.Limit > 1000 {
+		return fmt.Errorf("--limit must be 2..1000; manifest scans are always bounded")
+	}
+	if o.Target < 1 || o.Target >= o.Limit {
+		return fmt.Errorf("--target-files must be positive and less than --limit")
+	}
+	if o.MaxCalls < 1 || o.Timeout <= 0 || o.AdminTimeout <= 0 {
+		return fmt.Errorf("timeouts and --max-calls must be positive")
+	}
+	if o.Poll < time.Second || o.Quiet < o.Poll || o.Observe < o.Quiet {
+		return fmt.Errorf("require --poll >= 1s, --quiet >= --poll, and --observe-timeout >= --quiet")
+	}
+	if o.Database == "" || o.Host == "" {
+		return fmt.Errorf("host and database must not be empty")
+	}
+	return nil
+}
+func readPassword() (string, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("password required: use --password-stdin for agents, or an interactive terminal with -p")
+	}
+	fmt.Fprint(os.Stderr, "MySQL password: ")
+	b, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	return string(b), nil
+}
+func connect(o Options, password string) (*sql.DB, error) {
+	config := mysql.NewConfig()
+	config.User = o.User
+	config.Passwd = password
+	config.Net = "tcp"
+	config.Addr = net.JoinHostPort(o.Host, strconv.Itoa(o.Port))
+	config.DBName = o.Database
+	config.Timeout = o.Timeout
+	// Use text queries and UTC timestamp literals. Never emit the formatted DSN.
+	db, err := sql.Open("mysql", config.FormatDSN())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), o.Timeout)
+	defer cancel()
+	if err = db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+func friendly(err error, password string) string {
+	msg := err.Error()
+	if password != "" {
+		msg = strings.ReplaceAll(msg, password, "[redacted]")
+	}
+	var authErr *mysql.MySQLError
+	switch {
+	case errors.As(err, &authErr) && (authErr.Number == 1045 || authErr.Number == 1698):
+		msg += "; authentication rejected: check username/password and the server user-provider configuration"
+	case errors.Is(err, context.DeadlineExceeded):
+		msg += "; query timed out. Narrow the range or lower LIMIT, then retry the diagnostic"
+	default:
+		var ne net.Error
+		if errors.As(err, &ne) {
+			msg += "; check MySQL host/port, network reachability, and whether GreptimeDB is running"
+		}
+	}
+	return msg
+}

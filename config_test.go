@@ -67,3 +67,17 @@ func TestConfigRejectsOversizeInsteadOfTruncating(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+func TestObservationBudgetIncludesInitialPoll(t *testing.T) {
+	for _, tc := range []struct {
+		budget string
+		valid  bool
+	}{
+		{"2s", false}, {"3s", false}, {"4s", true},
+	} {
+		_, err := parseOptions([]string{"--poll", "1s", "--quiet", "2s", "--observe-timeout", tc.budget})
+		if (err == nil) != tc.valid {
+			t.Fatalf("budget=%s error=%v", tc.budget, err)
+		}
+	}
+}

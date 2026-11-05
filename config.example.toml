@@ -57,7 +57,8 @@ query-timeout = "10s"
 # Stability is a heuristic, not proof that the server scheduler is idle.
 # quiet = "10s"
 
-# Maximum observation period after each ADMIN (>= quiet).
+# Maximum observation period after each ADMIN (> quiet + poll).
+# Allow additional time for queries and further polling when samples change.
 # On expiry, stop submissions; accepted server work may continue.
 # Increase to e.g. "30m" for large backlogs that keep making progress.
 # observe-timeout = "2m"

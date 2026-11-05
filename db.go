@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -38,7 +38,7 @@ import (
 type Audit struct {
 	err  error
 	mu   sync.Mutex
-	file *os.File
+	file io.WriteCloser
 }
 
 // Write appends an audit event unless logging is disabled or has failed.
@@ -176,7 +176,7 @@ func (s *Store) query(ctx context.Context, operation, q string, read func(*sql.R
 		err = fmt.Errorf("%s: %w", operation, err)
 	}
 	s.audit.Write("query-result", map[string]any{"operation": operation, "elapsed": time.Since(begin).String(), "ok": err == nil})
-	return err
+	return errors.Join(err, s.audit.Err())
 }
 
 // Regions reads up to 257 rows and rejects missing, duplicate or excess regions.
@@ -296,7 +296,7 @@ func (s *Store) Diagnose(ctx context.Context, table, database string) (Diagnosis
 		diagnosis.Window = "unknown"
 	}
 	s.audit.Write("diagnosis", diagnosis)
-	return diagnosis, nil
+	return diagnosis, s.audit.Err()
 }
 
 // Metric metadata SSTs have timestamp zero and are not time-series data.
@@ -342,6 +342,7 @@ func (s *Store) Probe(ctx context.Context, id uint64, start, end time.Time) (Win
 	}
 	if err == nil {
 		s.audit.Write("manifest-snapshot", manifestSnapshot{Window: window})
+		err = s.audit.Err()
 	}
 	return window, err
 }
@@ -361,7 +362,7 @@ func (s *Store) Compact(ctx context.Context, d Diagnosis, w Window, timeout time
 		return classifyAdminError(err, len(d.Regions))
 	}
 	s.audit.Write("admin-return", map[string]any{"start": w.Start, "end": w.End})
-	return nil
+	return s.audit.Err()
 }
 
 // A multi-region request may partially succeed even if one region reports busy.

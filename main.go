@@ -167,8 +167,8 @@ func (o Options) Validate() error {
 	if o.MaxCalls < 1 || o.Timeout <= 0 || o.AdminTimeout <= 0 {
 		return fmt.Errorf("timeouts and --max-calls must be positive")
 	}
-	if o.Poll < time.Second || o.Quiet < o.Poll || o.Observe < o.Quiet {
-		return fmt.Errorf("require --poll >= 1s, --quiet >= --poll, and --observe-timeout >= --quiet")
+	if o.Poll < time.Second || o.Quiet < o.Poll || o.Observe <= o.Quiet || o.Observe-o.Quiet <= o.Poll {
+		return fmt.Errorf("require --poll >= 1s, --quiet >= --poll, and --observe-timeout > --quiet + --poll (allow additional query time)")
 	}
 	if o.Database == "" || o.Host == "" {
 		return fmt.Errorf("host and database must not be empty")

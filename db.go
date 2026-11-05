@@ -144,8 +144,10 @@ func (w Window) Bytes() uint64 {
 	}
 	return b
 }
+
+// Queries use the MySQL endpoint, which interprets backslash escapes.
 func literal(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\\", "\\\\"), "'", "''") + "'"
 }
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 func (s *Store) query(ctx context.Context, operation, q string, read func(*sql.Rows) error) error {

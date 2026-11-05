@@ -174,7 +174,7 @@ func TestCommandSpecificFlags(t *testing.T) {
 			t.Fatalf("%v: code=%d %s", args, code, output.String())
 		}
 	}
-	if got := literal(`a\b'c`); got != `'a\b''c'` {
+	if got := literal(`a\b'c`); got != `'a\\b''c'` {
 		t.Fatalf("literal=%q", got)
 	}
 }

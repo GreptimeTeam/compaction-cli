@@ -143,6 +143,7 @@ func loadConfig(fs *flag.FlagSet, path string, explicit map[string]bool) error {
 			if err = fs.Set(key, text); err != nil {
 				return fmt.Errorf("config key %q: %w", key, err)
 			}
+			explicit[key] = true
 		}
 	}
 	return nil

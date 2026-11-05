@@ -58,7 +58,9 @@ optional `error`. Early failures emit `error`; execution failures emit a result
 with `data.error`. Check exit status as well as the final event.
 
 Render concise Markdown from real outputs: selected scope, observed exact/lower
-bound counts, whole-table change, completed windows, attempts, and final status.
+bound counts, whole-table change, checkpointed windows, attempts, and final status.
+`next_window` is the next index to recheck; a checkpoint may repeat a window
+that already met its target. It equals the window count on completion.
 Do not invent a percentage or equate ADMIN attempts with background merge units.
 `status` reads an offline checkpoint; use diagnosis/planning for live evidence.
 

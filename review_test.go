@@ -178,3 +178,14 @@ func TestCommandSpecificFlags(t *testing.T) {
 		t.Fatalf("literal=%q", got)
 	}
 }
+
+func TestCommandSpecificConfigKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.toml")
+	if err := os.WriteFile(path, []byte("state = \"unexpected.json\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if code := command([]string{"tables", "--config", path}, &output); code != 2 {
+		t.Fatalf("code=%d %s", code, output.String())
+	}
+}

@@ -21,8 +21,10 @@ greptime-compaction-cli plan --config customer.toml --table events \
 
 Use the actual endpoint, database, table, and requested range. Times require a
 zone; start is inclusive and end exclusive. Diagnosis supplies boundaries but
-planning requires explicit times. Config holds connection and tuning settings,
-not credentials. Use `--password-stdin` with the caller's credential facility for
+planning requires explicit times. Keep a config shared by tables/diagnose/plan
+limited to connection settings. Supply compaction and scan tuning as plan flags
+or in a separate plan-only config; tables/diagnose reject those keys. Config
+must not contain credentials. Use `--password-stdin` with the caller's credential facility for
 noninteractive authentication; never place passwords in flags or transcripts.
 
 A `logical_table` error identifies shared physical storage in `physical_table`.

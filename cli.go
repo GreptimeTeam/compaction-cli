@@ -309,7 +309,7 @@ func saveJSON(path string, v any, exclusive bool) error {
 		return err
 	}
 	if len(data) > 16<<20 {
-		return fmt.Errorf("state exceeds 16 MiB")
+		return fmt.Errorf("JSON file exceeds 16 MiB")
 	}
 	if exclusive {
 		f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)

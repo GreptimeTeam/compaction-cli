@@ -115,7 +115,13 @@ type Window struct {
 	Files      []File
 	Limited    bool
 	State      string
-	Calls      int // Reserved zero-valued field in manifest audit snapshots.
+}
+
+// manifestSnapshot preserves the legacy Calls key only at the audit boundary.
+// Actual ADMIN attempt counts are reported in execution progress and state.
+type manifestSnapshot struct {
+	Window
+	Calls int
 }
 
 // Fingerprint hashes sorted region/file identities to detect sample changes.
@@ -335,7 +341,7 @@ func (s *Store) Probe(ctx context.Context, id uint64, start, end time.Time) (Win
 		window.State = "limited (lower bound)"
 	}
 	if err == nil {
-		s.audit.Write("manifest-snapshot", window)
+		s.audit.Write("manifest-snapshot", manifestSnapshot{Window: window})
 	}
 	return window, err
 }

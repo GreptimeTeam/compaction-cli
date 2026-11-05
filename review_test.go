@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,5 +188,57 @@ func TestCommandSpecificConfigKeys(t *testing.T) {
 	var output bytes.Buffer
 	if code := command([]string{"tables", "--config", path}, &output); code != 2 {
 		t.Fatalf("code=%d %s", code, output.String())
+	}
+}
+
+func TestReadCommandsRejectUnusedSettings(t *testing.T) {
+	for _, setting := range []struct{ key, value string }{
+		{"table", "events"}, {"limit", "200"}, {"target-files", "20"},
+		{"max-calls", "10"}, {"scan-budget", "32"}, {"scan-interval", "1s"},
+		{"request-window", "2h"}, {"min-window", "1m"}, {"admin-timeout", "1m"},
+		{"poll", "2s"}, {"quiet", "10s"}, {"observe-timeout", "1m"},
+	} {
+		for _, cmd := range []string{"tables", "status", "diagnose"} {
+			if cmd == "diagnose" && setting.key == "table" {
+				continue
+			}
+			var output bytes.Buffer
+			if code := command([]string{cmd, "--" + setting.key, setting.value}, &output); code != 2 || !strings.Contains(output.String(), "not supported") {
+				t.Fatalf("%s --%s: code=%d %s", cmd, setting.key, code, output.String())
+			}
+		}
+	}
+	for _, body := range []string{"table = \"events\"", "limit = 200"} {
+		path := filepath.Join(t.TempDir(), "settings.toml")
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		if code := command([]string{"tables", "--config", path}, &output); code != 2 || !strings.Contains(output.String(), "not supported") {
+			t.Fatalf("config %s: code=%d %s", body, code, output.String())
+		}
+	}
+}
+
+func TestExampleConfigSupportsReadCommands(t *testing.T) {
+	options, err := parseOptions([]string{"--config", "config.example.toml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"tables", "diagnose"} {
+		if err := validateCommand(cmd, options); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestOversizeJSONWriteNamesTheFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plan.json")
+	err := saveJSON(path, strings.Repeat("x", 16<<20), true)
+	if err == nil || err.Error() != "JSON file exceeds 16 MiB" {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected file: %v", err)
 	}
 }

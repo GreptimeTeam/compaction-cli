@@ -85,3 +85,11 @@ func TestSchemaV1Keys(t *testing.T) {
 		}
 	}
 }
+
+func TestManifestSnapshotRetainsLegacyCalls(t *testing.T) {
+	snapshot := jsonObject(t, manifestSnapshot{Window: Window{State: "scanned"}})
+	requireJSONKeys(t, snapshot, "Start End Files Limited State Calls")
+	if snapshot["Calls"] != float64(0) {
+		t.Fatalf("Calls=%v", snapshot["Calls"])
+	}
+}

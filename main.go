@@ -226,6 +226,15 @@ func validateCommand(cmd string, options Options) error {
 	commands := map[string]string{
 		"start": "plan", "end": "plan", "save": "plan", "plan": "run",
 		"state": "run resume status", "execute": "run resume", "ack-unknown": "resume",
+		"table": "diagnose plan",
+		"limit": "plan", "target-files": "plan", "max-calls": "plan",
+		"admin-timeout": "plan", "poll": "plan", "quiet": "plan", "observe-timeout": "plan",
+		"scan-budget": "plan", "min-window": "plan", "request-window": "plan", "scan-interval": "plan",
+		"host": "tables diagnose plan", "port": "tables diagnose plan",
+		"user": "tables diagnose plan", "database": "tables diagnose plan", "query-timeout": "tables diagnose plan",
+		"password": "tables diagnose plan run resume", "p": "tables diagnose plan run resume",
+		"password-stdin": "tables diagnose plan run resume", "log": "tables diagnose plan run resume",
+		"config": "tables diagnose plan",
 	}
 	for key, allowed := range commands {
 		if options.Provided[key] && !slices.Contains(strings.Fields(allowed), cmd) {

@@ -95,6 +95,6 @@ CI checks formatting, Go lint, vet, race tests and dependencies. It builds Linux
 and macOS amd64/arm64 binaries and a Linux amd64/arm64 image on standard GitHub
 runners. PRs only build; version tags publish binaries and GHCR images.
 
-Run `make check` locally. [Validation instructions](docs/usage.md#development-ci-and-validation)
+Run `make check` and `make lint` locally. See [AGENTS.md](AGENTS.md) for Go conventions. [Validation instructions](docs/usage.md#development-ci-and-validation)
 cover real-server tests and the 30,000-SST case. Tested server behavior and
 performance depend on the GreptimeDB version; manifest LIMIT pushdown is required.

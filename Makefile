@@ -1,4 +1,4 @@
-.PHONY: build test check fmt dist image
+.PHONY: build test check lint fmt dist image
 
 build:
 	go build -trimpath -o greptime-compaction-cli .
@@ -12,6 +12,11 @@ check:
 	go test -race ./...
 	python3 -m unittest discover -s scripts -p '*_test.py'
 	python3 -m py_compile e2e.py large_e2e.py analyze_run.py scripts/build.py
+
+# Use the golangci-lint version pinned in .github/workflows/ci.yml.
+GOLANGCI_LINT ?= golangci-lint
+lint:
+	$(GOLANGCI_LINT) run ./...
 
 fmt:
 	gofmt -w *.go

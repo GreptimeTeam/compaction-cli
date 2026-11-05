@@ -42,7 +42,7 @@ def main():
         stage=Path(work)/name;stage.mkdir()
         env={**os.environ,"CGO_ENABLED":"0","GOOS":args.os,"GOARCH":args.arch}
         subprocess.run(["go","build","-trimpath","-ldflags",f"-s -w -X main.version={args.version} -X main.commit={args.commit}","-o",str(stage/"greptime-compaction-cli"),"."],cwd=ROOT,env=env,check=True)
-        for file in ("LICENSE","README.md","config.example.toml"):shutil.copy2(ROOT/file,stage/file)
+        for file in ("LICENSE","README.md","AGENTS.md","config.example.toml"):shutil.copy2(ROOT/file,stage/file)
         shutil.copytree(ROOT/"skills",stage/"skills")
         shutil.copytree(ROOT/"docs",stage/"docs")
         archive=args.out/(name+".tar.gz")

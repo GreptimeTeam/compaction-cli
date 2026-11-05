@@ -97,9 +97,9 @@ window/progress fields for rendering rather than rewriting execution artifacts.
 
 | Flag / TOML key | Default | Limit or purpose |
 |---|---:|---|
-| `limit` | 200 | Manifest rows per query, 2–1000 |
-| `scan-budget` | 128 | Probes per plan, 1–4096 |
-| `scan-interval` | 250ms | Delay between probes, at least 100ms |
+| `limit` | 1000 | Manifest rows per query, 2–1000 |
+| `scan-budget` | 1024 | Probes per plan, 1–4096 |
+| `scan-interval` | 500ms | Delay between probes, at least 100ms |
 | `request-window` | 1h | Initial planning interval |
 | `min-window` | 1m | Smallest adaptive interval, at least 1s |
 | `target-files` | 50 | Exact count target per interval, below LIMIT |
@@ -110,6 +110,11 @@ window/progress fields for rendering rather than rewriting execution artifacts.
 | `quiet` | 10s | Unchanged observations required before proceeding |
 | `observe-timeout` | 2m | Observation budget after an ADMIN |
 | `log` | off | New mode-0600 JSONL audit file |
+
+The default planning budget allows up to 1,024 probes of 1,000 rows each.
+Probes can overlap, so returned rows are not a distinct-file count. Using the
+full budget adds about 8.5 minutes of pacing plus query time. Reduce the budget
+or narrow the range when a shorter preview is needed.
 
 Reads and ADMIN use one connection. Requests use `parallelism=1`.
 `GREPTIME_TWCS_MAX_INPUT_FILES` is a server setting, not a CLI option. Input caps
@@ -126,7 +131,8 @@ SIGINT/SIGTERM stops future submissions, waits for the current SQL response or
 deadline, saves state and exits 130. Accepted server work continues. Read-only
 scans cancel their client context.
 
-State is persisted before ADMIN submission and replaced atomically. A file lock
+State is persisted before ADMIN submission and replaced atomically. File data
+and the parent directory are synced; a sync failure stops submissions. A file lock
 prevents two writers using the same state file. Different state files and other
 clients can still conflict on the same table. An audit write failure stops
 further SQL submissions.
@@ -170,6 +176,7 @@ loopback unless networking is configured accordingly.
 
 ```sh
 make check
+make lint
 make build
 python3 e2e.py --greptime /absolute/path/to/greptime --out /tmp/new-cli-e2e
 python3 large_e2e.py --greptime /path/to/greptime \
@@ -187,6 +194,9 @@ CPU/cgroup memory and logs, checks boundary rows, and collects final SST shape.
 `--converge` uses a 30-minute observation budget; `--max-input-files` changes only
 the isolated test server. Tiny synthetic files do not reproduce production I/O
 volume. Cgroup memory includes page cache. Interior rows are not fully checked.
+
+Lint checks naming, documentation, error handling, SQL cleanup and complexity.
+Use the tool version pinned in CI; see [Go review guidance](../AGENTS.md).
 
 CI uses standard GitHub runners for lint, tests, four-platform archives and a
 two-platform Linux image. PRs do not publish. Version tags publish via scoped

@@ -3,6 +3,64 @@ run:
   timeout: 5m
 linters:
   default: standard
+  enable:
+    - revive
+    - godoclint
+    - godot
+    - misspell
+    - errorlint
+    - errname
+    - durationcheck
+    - nilerr
+    - nilnesserr
+    - bodyclose
+    - sqlclosecheck
+    - rowserrcheck
+    - copyloopvar
+    - predeclared
+    - recvcheck
+    - varnamelen
+    - interfacebloat
+    - cyclop
+    - nolintlint
+  settings:
+    godoclint:
+      default: basic
+      enable: [require-doc, require-pkg-doc]
+    revive:
+      enable-default-rules: false
+      rules:
+        - name: exported
+          arguments: [check-private-receivers, disable-stuttering-check, check-public-interface]
+        - name: package-comments
+        - name: var-naming
+        - name: receiver-naming
+        - name: context-as-argument
+        - name: error-naming
+        - name: error-strings
+        - name: error-return
+        - name: increment-decrement
+        - name: redundant-import-alias
+    varnamelen:
+      min-name-length: 2
+      max-distance: 20
+      ignore-names: [err, ok, id, db, ctx]
+    interfacebloat:
+      max: 5
+    cyclop:
+      max-complexity: 20
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    presets: []
+    rules:
+      # Table-driven assertions add branches without production control flow.
+      - path: _test\.go$
+        linters: [cyclop]
+      - path: _test\.go$
+        linters: [godoclint]
+        text: 'symbol should have a godoc \("Test'
 formatters:
   enable:
     - gofmt

@@ -16,7 +16,8 @@
 Put flags after the command. Explicit flags override the
 [TOML configuration](../config.example.toml). Unknown keys are errors.
 `run` and `resume` use connection, range and tuning settings saved in the plan;
-create another plan to change those settings. They accept state, auth, output,
+create another plan to change those settings. Command-specific flags and TOML
+keys are rejected outside their commands; `--ack-unknown` is resume-only. They accept state, auth, output,
 execution and audit-log flags. Existing plan, initial state and audit files are
 not overwritten.
 
@@ -39,7 +40,9 @@ authenticated tunnel when transport protection is required.
 Diagnosis reads `region_statistics`, two ordered manifest `LIMIT 1` probes, and
 the first region's TWCS option. It rejects duplicate region IDs or more than 256
 regions. Missing statistics are reported as unavailable; empty tables report no
-SSTs. Statistics may lag recent storage changes.
+SSTs. Statistics may lag recent storage changes. Region timestamp fields remain in
+diagnosis JSON and saved plans. File timestamp CASTs are requested only when
+`--log` enables detailed manifest audit snapshots.
 
 Logical metric tables return `logical_table` with a `physical_table` field.
 Selecting that physical table includes its shared storage. The CLI does not
@@ -86,10 +89,14 @@ Progress fields:
 | `state`, `message` | Current operation and explanation |
 
 State/result fields include `status`, `next_window`, `admin_attempts`, `plan` and
-optional `error`. `next_window` is the number of completed windows. There is no
-completion-percentage estimate. ADMIN attempts are not background merge units.
+optional `error`. `next_window` is the zero-based index to recheck on resume;
+a checkpoint may repeat a window that already met its target. It equals the
+window count on completion. Markdown reports checkpointed windows, not a live
+completion estimate. ADMIN attempts are not background merge units.
 
-Plan/state schema version is 1. Some nested options/diagnosis fields retain Go
+Plan/state schema version is 1. The version is checked before strict decoding.
+Malformed documents, unsupported versions and unknown fields return exit 2;
+file access and write failures return exit 7. Some nested options/diagnosis fields retain Go
 names (`Start`, `End`, `Regions`). Keep these files intact; use the lower-case
 window/progress fields for rendering rather than rewriting execution artifacts.
 
@@ -131,7 +138,10 @@ SIGINT/SIGTERM stops future submissions, waits for the current SQL response or
 deadline, saves state and exits 130. Accepted server work continues. Read-only
 scans cancel their client context.
 
-State is persisted before ADMIN submission and replaced atomically. File data
+An initial state is created only after connection, diagnosis and table identity
+checks succeed. Those failures leave no checkpoint; retry `run` directly. The
+`.lock` file may remain and is reusable. State is persisted before ADMIN
+submission and replaced atomically. File data
 and the parent directory are synced; a sync failure stops submissions. A file lock
 prevents two writers using the same state file. Different state files and other
 clients can still conflict on the same table. An audit write failure stops

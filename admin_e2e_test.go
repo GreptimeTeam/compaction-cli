@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -108,6 +109,15 @@ func TestManifestTieOrderingE2E(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	store := &Store{db: db, timeout: 10 * time.Second, limit: 100}
 	ctx := context.Background()
+	for _, value := range []string{"plain", "quote'", `back\slash`, `both\'`} {
+		var got string
+		if err := db.QueryRowContext(ctx, "SELECT "+literal(value)).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != value {
+			t.Fatalf("literal round trip: got %q want %q", got, value)
+		}
+	}
 	diagnosis, err := store.Diagnose(ctx, "tied_bench", "public")
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +126,27 @@ func TestManifestTieOrderingE2E(t *testing.T) {
 	if err != nil || all.Limited || len(all.Files) != 6 {
 		t.Fatalf("sample=%+v err=%v", all, err)
 	}
+	for _, file := range all.Files {
+		if file.Min != 0 || file.Max != 0 {
+			t.Fatal("ordinary probe fetched unused bounds")
+		}
+	}
+	auditFile, err := os.Create(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = auditFile.Close() }()
+	store.audit = &Audit{file: auditFile}
+	audited, err := store.Probe(ctx, diagnosis.ID, diagnosis.Start, diagnosis.End)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range audited.Files {
+		if file.Min != diagnosis.Start.UnixNano() || file.Max != file.Min {
+			t.Fatalf("missing audited bounds: %+v", file)
+		}
+	}
+	store.audit = nil
 	sort.Slice(all.Files, func(i, j int) bool { return all.Files[i].ID < all.Files[j].ID })
 	store.limit = 2
 	for range 3 {

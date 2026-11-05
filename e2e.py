@@ -165,6 +165,16 @@ def main():
         plan=root/"plan.json";state=root/"state.json"
         cli("plan","plan",*connection,"--start","2026-07-24T12:00:00Z","--end","2026-07-24T13:00:00Z","--request-window","20m","--limit","8","--target-files","1","--poll","1s","--quiet","2s","--save",str(plan),"-o","markdown")
         cli("guard","run","--plan",str(plan),"--state",str(state),expected=2)
+        for name,expected in [("missing-table",3),("changed-identity",2)]:
+            changed=json.loads(plan.read_text())
+            if name=="missing-table":
+                changed["options"]["Table"]=changed["diagnosis"]["Table"]="does_not_exist"
+            else:
+                changed["diagnosis"]["ID"]+=1
+            changed_plan=root/(name+".json");changed_plan.write_text(json.dumps(changed))
+            changed_state=root/(name+"-state.json")
+            cli(name,"run","--plan",str(changed_plan),"--state",str(changed_state),"--execute",expected=expected)
+            assert not changed_state.exists(),name
         command=[str(binary),"run","--plan",str(plan),"--state",str(state),"--execute","--log",str(root/"queries.jsonl")]
         proc=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         lines=[];paused=False
@@ -189,9 +199,13 @@ def main():
         with server(args.greptime,root/"authenticated",addresses,auth=credentials):
             cli("auth","tables","--port",str(addresses[2]),"--password-stdin",password=password+"\n")
             cli("auth-error","tables","--port",str(addresses[2]),"--password-stdin",password="wrong\n",expected=3)
+            auth_state=root/"auth-failed-state.json"
+            for trial in range(2):
+                cli(f"auth-run-error-{trial}","run","--plan",str(plan),"--state",str(auth_state),"--execute","--password-stdin",password="wrong\n",expected=3)
+                assert not auth_state.exists()
     finally:credentials.unlink()
     assert all(password not in f.read_text() for f in root.glob("*.stdout"))
-    (root/"result.json").write_text(json.dumps({"passed":True,"scope":"CLI diagnostics, plan, execute guard, signal pause, persisted resume, JSON/JSONL/Markdown, stdin authentication, logical-table handling; row count and sum unchanged"},indent=2))
+    (root/"result.json").write_text(json.dumps({"passed":True,"scope":"CLI diagnostics, plan, execute guard, signal pause, persisted resume, JSON/JSONL/Markdown, stdin authentication, logical-table handling, SQL literal round trips, failed connection/diagnosis leaves no checkpoint; row count and sum unchanged"},indent=2))
     print("CLI E2E passed:",root)
 
 

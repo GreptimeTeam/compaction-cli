@@ -31,3 +31,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+/greptime-compaction-cli
+/dist/
+/artifacts/
+__pycache__/

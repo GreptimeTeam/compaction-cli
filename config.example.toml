@@ -1,20 +1,63 @@
-# Explicit command-line flags override this file. No passwords in this file.
+# Explicit CLI flags override this file. Durations accept units such as ms, s, m, h.
+# run/resume use settings saved in the plan; changing this file affects new plans.
+# Supply passwords with -p or --password-stdin, never in this file.
+
+# GreptimeDB MySQL endpoint and database/schema.
 host = "127.0.0.1"
 port = 4002
 user = "root"
 database = "public"
+# Optional default table; --table overrides it.
 # table = "prober_physical_table"
 
-limit = 200
-scan-budget = 128
-scan-interval = "250ms"
+# Maximum rows returned by each manifest sample (2..1000).
+# A full sample is a lower bound. Larger samples increase per-query work.
+limit = 1000
+
+# Maximum range probes per plan (1..4096), excluding initial diagnosis.
+# More probes allow finer windows; this is not a budget for execution polling.
+scan-budget = 1024
+
+# Wait between planning probes (at least 100ms). Larger values reduce query rate.
+# At these defaults, using the full budget adds about 8.5 minutes of waits.
+scan-interval = "500ms"
+
+# Initial range size. Dense windows can split; a tight budget can widen them.
+# This does not change the table's TWCS option or confine background compaction.
 request-window = "1h"
+
+# Smallest adaptive planning window (at least 1s; no larger than request-window).
+# Smaller values allow finer scans, which consume more probes.
 min-window = "1m"
+
+# Skip a window when its uncapped SST count is <= this value (1..limit-1).
+# Counts span all data regions. Lower values request more compaction.
 target-files = 50
+
+# ADMIN attempt budget shared by a run and its resumes, including failed attempts.
+# This is not a limit on the server's background merge units.
 max-calls = 100
+
+# Client deadline for each read query, also used for connection setup.
+# Expiry does not guarantee the server has cancelled its work.
 query-timeout = "10s"
+
+# Deadline for an ADMIN response. A timeout leaves the outcome uncertain;
+# the CLI stops rather than automatically retrying the request.
 admin-timeout = "5m"
+
+# Wait between observations after ADMIN (at least 1s).
+# Larger values reduce query rate but delay progress updates.
 poll = "2s"
+
+# Require unchanged sample identities and table totals for this long (>= poll).
+# Stability is a heuristic, not proof that the server scheduler is idle.
 quiet = "10s"
+
+# Maximum observation period after each ADMIN (>= quiet).
+# On expiry, stop submissions; accepted server work may continue.
+# Increase to e.g. "30m" for large backlogs that keep making progress.
 observe-timeout = "2m"
-# log = "compaction-session.jsonl" # Must not already exist.
+
+# Optional JSONL SQL/action audit file. Must be a new path on each invocation.
+# log = "compaction-session.jsonl"

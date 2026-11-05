@@ -69,7 +69,7 @@ func parseOptions(args []string) (Options, error) {
 	fs.StringVar(&o.Table, "table", "", "Target table name")
 	fs.BoolVar(&o.Password, "password", false, "Prompt for password without echo (no value)")
 	fs.BoolVar(&o.Password, "p", false, "Prompt for password without echo")
-	fs.IntVar(&o.Limit, "limit", 200, "Maximum returned rows per manifest query (2..1000)")
+	fs.IntVar(&o.Limit, "limit", 1000, "Maximum returned rows per manifest query (2..1000)")
 	fs.IntVar(&o.Target, "target-files", 50, "Stop a request window when its exact SST count is at most this")
 	fs.IntVar(&o.MaxCalls, "max-calls", 100, "Maximum ADMIN submissions per run")
 	fs.DurationVar(&o.Timeout, "query-timeout", 10*time.Second, "Read query timeout")
@@ -79,10 +79,10 @@ func parseOptions(args []string) (Options, error) {
 	fs.DurationVar(&o.Observe, "observe-timeout", 2*time.Minute, "Maximum observation time after each ADMIN")
 	fs.StringVar(&o.Log, "log", "", "Optional JSONL query/action audit path; must not exist")
 	fs.StringVar(&o.Config, "config", "", "TOML configuration file; explicit CLI flags override file values")
-	fs.IntVar(&o.ScanBudget, "scan-budget", 128, "Maximum manifest queries per preview (1..4096)")
+	fs.IntVar(&o.ScanBudget, "scan-budget", 1024, "Maximum manifest queries per preview (1..4096)")
 	fs.DurationVar(&o.MinWindow, "min-window", time.Minute, "Minimum adaptive request window (at least 1s)")
 	fs.DurationVar(&o.RequestWindow, "request-window", time.Hour, "Initial planning window duration")
-	fs.DurationVar(&o.ScanInterval, "scan-interval", 250*time.Millisecond, "Delay between scan queries (at least 100ms)")
+	fs.DurationVar(&o.ScanInterval, "scan-interval", 500*time.Millisecond, "Delay between scan queries (at least 100ms)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}

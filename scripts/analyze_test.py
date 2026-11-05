@@ -16,6 +16,7 @@
 """Semantic checks for SST shape reporting and package argument validation."""
 import json
 import os
+import re
 import tempfile
 from unittest.mock import patch
 import sys
@@ -61,14 +62,18 @@ class EvidenceTests(unittest.TestCase):
             logs.mkdir(parents=True)
             uid = "12345678-1234-1234-1234-123456789abc"
             (logs / "greptimedb.2027-01-01").write_text(
-                f"2027-01-01T00:00:00Z INFO compaction inputs: [{uid}], outputs: [{uid}], metrics: merge: 2ms\n"
+                f"2027-01-01T00:00:00Z INFO compaction inputs: [{uid}], outputs: [{uid}], metrics: merge: 2ms, wait: 1h2m3s\n"
                 "2027-01-01T00:00:01Z INFO compaction inputs: new format\n"
                 "invalid INFO compaction inputs: [], outputs: [], metrics: merge: 1ms\n")
             events = [{"kind": "query-result", "value": {
                 "operation": f"Scan manifest window {year}-01-01T00:00:00Z .. end",
                 "elapsed": "1ms", "ok": True}} for year in (2026, 2027)]
+            events.append({"kind": "query-result", "value": {"operation": "bad timing", "elapsed": "unknown", "ok": False}})
             (root / "queries.jsonl").write_text("\n".join(map(json.dumps, events)))
             result = analyze_run.analyze(root)
+            self.assertEqual(result["unparsed_query_results"], [events[-1]["value"]])
+            self.assertEqual(result["failed_queries"], [events[-1]["value"]])
+            self.assertEqual(result["logged_phase_seconds"]["wait"]["sum"], 3723)
             self.assertEqual(result["compaction_log_lines"], 3)
             self.assertEqual(result["compaction_units"], 1)
             self.assertEqual(result["unparsed_compaction_lines"], 2)
@@ -93,11 +98,44 @@ class EvidenceTests(unittest.TestCase):
     def test_missing_shape_or_log_evidence_cannot_pass(self):
         valid = {"shape": {"complete": True, "sst_bytes": {"count": 1, "p50": 10}},
                  "unparsed_compaction_lines": 0, "compaction_units": 1}
-        large_e2e.validate_evidence(valid)
+        large_e2e.validate_evidence(valid, converge=True)
         for update in [{"shape": {}}, {"shape": {"complete": True, "sst_bytes": {"count": 0}}},
                        {"shape": {"complete": False}}, {"unparsed_compaction_lines": 1}, {"compaction_units": 0}]:
             with self.assertRaises(ValueError):
-                large_e2e.validate_evidence(valid | update)
+                large_e2e.validate_evidence(valid | update, converge=True)
+
+    def test_bounded_run_does_not_require_completed_compaction(self):
+        analysis = {"shape": {"complete": True, "sst_bytes": {"count": 1, "p50": 10}},
+                    "unparsed_compaction_lines": 0, "compaction_units": 0}
+        large_e2e.validate_evidence(analysis, converge=False)
+        with self.assertRaisesRegex(ValueError, "completion evidence"):
+            large_e2e.validate_evidence(analysis, converge=True)
+        for update in ({"unparsed_compaction_lines": 1}, {"unparsed_query_results": [{}]},
+                       {"shape": {"complete": False}}):
+            with self.assertRaises(ValueError):
+                large_e2e.validate_evidence(analysis | update, converge=False)
+
+    def test_example_30000_ssts_fit_shape_budget(self):
+        layout = large_e2e.load_layout(ROOT/"case.example.toml")
+        start, step = layout["start_unix_nanos"], layout["step_nanos"]
+        count = layout["sst_count"]
+        columns = ["region_id", "file_id", "min_ns", "max_ns", "file_size", "num_rows", "num_row_groups", "level"]
+        def sql(port, query):
+            self.assertIn("table_id = 8765", query)
+            a, b = map(int, re.findall(r"CAST\((\d+) AS TIMESTAMP", query))
+            limit = int(re.search(r"LIMIT (\d+)", query)[1])
+            first = max(0, (a-start+step-1)//step)
+            end = min(count, (b-start+step-1)//step, first+limit)
+            rows = [[1, str(i), start+i*step, start+i*step, 100, 1, 1, 0] for i in range(first, end)]
+            return {"output": [{"records": {"schema": {"column_schemas": [{"name": c} for c in columns]}, "rows": rows}}]}
+        with tempfile.TemporaryDirectory() as tmp, patch("analyze_run.e2e.sql", side_effect=sql), patch("analyze_run.time.sleep"):
+            before = analyze_run.collect_shape(1, 8765, start, start+count*step, Path(tmp)/"before.json")
+            after = analyze_run.collect_shape(1, 8765, start, start+count*step, Path(tmp)/"after.json", limit=1000)
+            self.assertFalse(before["complete"])
+            self.assertLess(len(before["files"]), count)
+            self.assertTrue(after["complete"])
+            self.assertLessEqual(len(after["probes"]), 128)
+            self.assertEqual({f["file_id"] for f in after["files"]}, {str(i) for i in range(count)})
 
     def test_example_case_and_invalid_layout(self):
         self.assertEqual(large_e2e.load_layout(ROOT/"case.example.toml")["sst_count"], 30000)

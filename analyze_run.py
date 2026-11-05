@@ -25,6 +25,8 @@ import time
 
 import e2e
 
+DURATION_TOKEN = r"\d+(?:\.\d+)?(?:ns|µs|us|ms|s|m|h)"
+
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 
 
@@ -39,7 +41,7 @@ def distribution(values):
 def seconds(value):
     units = {"h": 3600, "m": 60, "s": 1, "ms": .001, "µs": .000001, "us": .000001, "ns": 1e-9}
     token = r"(\d+(?:\.\d+)?)(ns|µs|us|ms|s|m|h)"
-    if not re.fullmatch(f"(?:{token})+", value):
+    if not isinstance(value, str) or not re.fullmatch(f"(?:{DURATION_TOKEN})+", value):
         raise ValueError(f"unrecognized duration: {value!r}")
     return sum(float(n)*units[u] for n,u in re.findall(token, value))
 
@@ -128,7 +130,7 @@ def analyze(root):
                 inputs.append(len(ins)); outputs.append(len(outs))
                 consumed.update(ins); generated.update(outs)
                 times.append(timestamp)
-                for name,duration in re.findall(r"(\w+): ([\d.]+(?:ns|µs|us|ms|s))",match[3]):
+                for name,duration in re.findall(rf"(\w+): ((?:{DURATION_TOKEN})+)(?=[,}}\s]|$)",match[3]):
                     phases[name].append(seconds(duration))
     intervals = [(b-a).total_seconds() for a,b in zip(times,times[1:])]
     audit = root/"queries.jsonl"
@@ -137,13 +139,19 @@ def analyze(root):
         events = [json.loads(line) for line in stream]
     query_groups=collections.defaultdict(list)
     failed=[]
+    unparsed_queries=[]
     for event in events:
         if event["kind"] == "query-result":
             value=event["value"]
             operation = value["operation"]
             match = re.match(r"^(compaction (?:inputs|outputs)):", operation)
             name = match[1] if match else re.sub(r" \d{4}-\d{2}-\d{2}T.*$", "", operation)
-            query_groups[name].append(seconds(value["elapsed"]))
+            try:
+                elapsed = seconds(value.get("elapsed"))
+            except ValueError:
+                unparsed_queries.append(value)
+            else:
+                query_groups[name].append(elapsed)
             if not value["ok"]: failed.append(value)
     result={"scope":"Observed functional test; inter-completion intervals are not task duration or causal attribution",
         "admin_submissions":sum(e["kind"]=="admin-submit" for e in events),
@@ -153,7 +161,7 @@ def analyze(root):
         "logged_phase_seconds":{k:distribution(v) for k,v in phases.items()},
         "completion_interval_seconds":distribution(intervals),
         "query_seconds":{k:distribution(v) for k,v in query_groups.items()},
-        "failed_queries":failed,"server_warning_lines":warnings,"server_error_lines":errors,
+        "unparsed_query_results":unparsed_queries,"failed_queries":failed,"server_warning_lines":warnings,"server_error_lines":errors,
         "server_log_bytes":sum(p.stat().st_size for p in logs)}
     resources_path=root/"resources.jsonl"
     if resources_path.exists():

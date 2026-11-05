@@ -233,7 +233,10 @@ particularly for manifest LIMIT pushdown and compaction behavior.
 
 Analyze saved large-run artifacts with `python3 analyze_run.py --run /path/to/result`.
 The report includes parsed and unparsed compaction line counts; large E2E rejects
-unparsed lines, missing completions, or empty/incomplete final shape evidence.
+unparsed lines, invalid query timings, or empty/incomplete final shape evidence.
+Only `--converge` requires a logged completion; bounded pause/resume can finish
+before background compaction completes. Final shape probes use LIMIT 1000 and
+a budget of 128 queries, independently of the CLI planning samples.
 Shape collection uses bounded 6-hour probes, splitting saturated probes down to
 1 second (a split requires at least 2 seconds). Boundary and bucket statistics
 assume UTC-aligned 6-hour TWCS windows; they do not discover the table option.

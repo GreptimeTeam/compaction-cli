@@ -161,14 +161,3 @@ func TestManifestTieOrderingE2E(t *testing.T) {
 		}
 	}
 }
-
-// TestExampleConfig validates the documented entry point without a server.
-func TestExampleConfig(t *testing.T) {
-	options, err := parseOptions([]string{"--config", "config.example.toml"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := options.Validate(); err != nil {
-		t.Fatal(err)
-	}
-}

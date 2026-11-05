@@ -49,7 +49,7 @@ def load_layout(path):
     return layout
 
 
-def validate_evidence(analysis):
+def validate_evidence(analysis, *, converge):
     """Reject missing or incomplete evidence before writing a passing result."""
     summary = analysis.get("shape", {})
     if not summary.get("complete") or not summary.get("sst_bytes", {}).get("count"):
@@ -58,7 +58,9 @@ def validate_evidence(analysis):
         raise ValueError("final SST size quantiles are missing")
     if analysis["unparsed_compaction_lines"]:
         raise ValueError("server compaction log lines were not parsed")
-    if not analysis["compaction_units"]:
+    if analysis.get("unparsed_query_results"):
+        raise ValueError("query timings were not parsed")
+    if converge and not analysis["compaction_units"]:
         raise ValueError("no parsed compaction completion evidence")
 
 
@@ -167,7 +169,7 @@ def main():
                     assert response["output"][0]["records"]["rows"] == [[i, start+i*step] for i in range(first,end)]
                     checks.append(response)
                 (root / "boundary-checks.json").write_text(json.dumps(checks))
-                analyze_run.collect_shape(addresses[0], initial["ID"], start, start+n*step, root / "final-shape.json")
+                analyze_run.collect_shape(addresses[0], initial["ID"], start, start+n*step, root / "final-shape.json", limit=1000)
                 import urllib.request
                 (root / "metrics-final.prom").write_bytes(urllib.request.urlopen(f"http://127.0.0.1:{addresses[0]}/metrics", timeout=10).read())
                 assert proc.poll() is None, "server exited during the test"
@@ -186,7 +188,7 @@ def main():
     assert resources and int(resources[-1]["memory_events"]["oom_kill"]) == 0
     analysis = analyze_run.analyze(root)
     (root / "analysis.json").write_text(json.dumps(analysis, indent=2))
-    validate_evidence(analysis)
+    validate_evidence(analysis, converge=args.converge)
     result = {"passed": True, "scope": "full plan convergence" if args.converge else "bounded CLI pause/resume, not total convergence",
               "manifest_queries": len(manifest), "max_returned_manifest_rows": max(len(v["Files"] or []) for v in snapshots),
               "cgroup_peak_bytes": max(r["memory_peak"] for r in resources),
